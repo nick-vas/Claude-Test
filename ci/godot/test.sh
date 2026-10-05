@@ -9,7 +9,8 @@
 #   dotnet     `dotnet test` on the solution: xUnit, NUnit, MSTest, and any gdUnit4Net suites in it.
 #   gdunit4    gdUnit4Net (C#) on the Godot project's csproj; [RequireGodotRuntime] tests run in headless Godot.
 #   godottest  Chickensoft GoDotTest: the game runs its own C# suites (--scene picks the runner scene).
-#   gut        GUT (GDScript) via addons/gut/gut_cmdln.gd; honours res://.gutconfig.json.
+#   gut        GUT (GDScript) via addons/gut/gut_cmdln.gd; honours res://.gutconfig.json, else runs the
+#              test_*.gd files in every folder that has a script extending GutTest.
 #   smoke      Boots the main scene (or --scene) for N frames and fails on any engine/script error.
 #
 # --filter means: dotnet/gdunit4 `dotnet test --filter`; godottest suite name; gut -gunit_test_name.
@@ -34,6 +35,9 @@ while [[ $# -gt 0 ]]; do
     *) die "test.sh: unknown argument '$1'" ;;
   esac
 done
+
+# gut and smoke have no coverage tooling; ignore --coverage for them rather than warn.
+[[ "$runner" == gut || "$runner" == smoke ]] && coverage=false
 
 mkdir -p "$results"
 results="$(cd "$results" && pwd)"
@@ -142,8 +146,9 @@ run_godottest() {
   if $coverage; then
     local coverlet bin_dir
     coverlet="$(dotnet_tool coverlet.console coverlet)"
-    bin_dir="$(find "$project/.godot/mono/temp/bin" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-    [[ -n "$bin_dir" ]] || die "godottest runner: build the project before collecting coverage"
+    # The editor runs the Debug build; an ExportRelease folder left by an export must not be picked.
+    bin_dir="$project/.godot/mono/temp/bin/Debug"
+    [[ -d "$bin_dir" ]] || die "godottest runner: no Debug build in $bin_dir; build the project first"
     mkdir -p "$results/coverage"
     set +e
     "$coverlet" "$bin_dir" --target "$GODOT_BIN" --targetargs "${args[*]} --coverage" \
@@ -164,8 +169,14 @@ run_gut() {
   local logfile="$results/gut.log"
   local args=(--headless --path "$project" -s addons/gut/gut_cmdln.gd -gexit -gdisable_colors
               "-gjunit_xml_file=$results/gut.junit.xml")
-  # Without a .gutconfig.json, look for test_*.gd anywhere under res://test.
-  [[ -f "$project/.gutconfig.json" ]] || args+=(-gdir=res://test -ginclude_subdirs)
+  # Without a .gutconfig.json, search every folder that holds a script extending GutTest.
+  if [[ ! -f "$project/.gutconfig.json" ]]; then
+    local dir
+    while IFS= read -r dir; do
+      args+=("-gdir=res://${dir#"$project"}")
+    done < <(grep -rlE --include='*.gd' '^extends +GutTest' "$project" | grep -v "^$project/addons/" |
+             xargs -I{} dirname {} | sort -u)
+  fi
   [[ -n "$filter" ]] && args+=("-gunit_test_name=$filter")
   group "GUT"
   local status=0

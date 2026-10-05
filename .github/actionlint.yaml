@@ -1,0 +1,5 @@
+# job.workflow_repository / job.workflow_sha (added to GitHub Actions in 2026) are newer than actionlint.
+paths:
+  .github/workflows/godot.yml:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined'

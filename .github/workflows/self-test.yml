@@ -1,4 +1,4 @@
-# Exercises the pipeline suite against examples/breakout on every change.
+# Exercises the pipeline against the examples on every change, through every entry point.
 name: Self-test
 
 on:
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: shellcheck
-        run: shellcheck -x ci/godot/*.sh
+        run: shellcheck -x ci/godot/*.sh ci/godot/godot-ci
       - name: Parse action manifests
         # actionlint covers workflows only; make sure every composite action is valid YAML.
         run: |
@@ -29,48 +29,41 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  # The full pipeline: every test framework, coverage, then exports.
-  ci:
-    uses: ./.github/workflows/godot-ci.yml
+  # No inputs at all: detects the shallowest project (examples/gdscript), installs GUT, runs gut + smoke.
+  zero-config:
+    uses: ./.github/workflows/godot.yml
+
+  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage and exports.
+  csharp:
+    uses: ./.github/workflows/godot.yml
     with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      addons: gut@v9.6.1
-      test-runners: '["dotnet", "gdunit4", "godottest", "gut", "smoke"]'
-      godottest-scene: res://test/godottest/GoDotTestRunner.tscn
+      project: examples/breakout/game
       coverage: true
-      export-presets: '["Linux", "Windows"]'
-      artifact-prefix: breakout
+      exports: all
       retention-days: 3
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
 
-  # The standalone pieces, called with the same inputs to prove they swap in.
-  build-only:
-    uses: ./.github/workflows/godot-build.yml
-    with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
-
-  smoke-only:
-    uses: ./.github/workflows/godot-test.yml
-    with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      test-runners: '["smoke"]'
-      smoke-frames: 600
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
-
+  # Explicit runners on macOS.
   macos:
-    uses: ./.github/workflows/godot-test.yml
+    uses: ./.github/workflows/godot.yml
     with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      addons: gut@v9.6.1
-      test-runners: '["dotnet", "gut"]'
+      project: examples/breakout/game
+      runners: gdunit4,gut
       runs-on: macos-latest
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
+
+  # The CLI on a bare runner, exactly as on a developer machine or in a Claude cloud session.
+  cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: ci/godot/godot-ci test --project examples/gdscript
+      - run: ci/godot/godot-ci test --project examples/breakout/game --runners dotnet --filter "FullyQualifiedName~RunState"
+
+  # The composite action inside a custom workflow.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/godot
+        with:
+          command: build
+          project: examples/breakout/game

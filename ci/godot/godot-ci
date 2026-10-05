@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# One entry point for building, testing and exporting Godot 4 projects, locally or on CI.
+# Everything is detected from the project; flags only override what was detected.
+#
+#   godot-ci [test|build|export|setup|detect] [options]
+#
+#   test     (default) install Godot if needed, build, then run every detected test runner
+#   build    install Godot if needed, install addons, compile C# and import the project
+#   export   build, then export presets (all of them, or --preset NAME)
+#   setup    only install Godot and .NET (add --templates for export templates)
+#   detect   print what would be used, and change nothing
+#
+# Options:
+#   --project DIR         folder with project.godot      (default: found under the current directory)
+#   --solution PATH       .sln/.csproj for dotnet        (default: nearest one at or above the project)
+#   --godot-version VER   e.g. 4.6.1 or 4.7-rc1           (default: from Godot.NET.Sdk in the csproj, else 4.6.1)
+#   --runners LIST        comma list of dotnet,gdunit4,godottest,gut,smoke, or "none" (default: detected)
+#   --filter EXPR         passed to each runner's own filter
+#   --coverage            collect coverage (dotnet, gdunit4, godottest)
+#   --preset NAME         export only this preset (repeatable; default: every preset)
+#   --results DIR         test results folder (default: test-results)
+#   --output DIR          export folder (default: build)
+#   --frames N            frames the smoke runner plays (default: 120)
+#   --github-output       detect: also write the values to $GITHUB_OUTPUT
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ci/godot/common.sh
+source "$here/common.sh"
+
+command="test"
+case "${1:-}" in test|build|export|setup|detect) command="$1"; shift ;; esac
+
+project=""; solution=""; godot_version=""; runners=""; filter=""; coverage=false; presets=()
+results="test-results"; output="build"; frames=120; github_output=false; templates=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) project="$2"; shift 2 ;;
+    --solution) solution="$2"; shift 2 ;;
+    --godot-version) godot_version="$2"; shift 2 ;;
+    --runners) runners="$2"; shift 2 ;;
+    --filter) filter="$2"; shift 2 ;;
+    --coverage) coverage=true; shift ;;
+    --preset) presets+=("$2"); shift 2 ;;
+    --results) results="$2"; shift 2 ;;
+    --output) output="$2"; shift 2 ;;
+    --frames) frames="$2"; shift 2 ;;
+    --github-output) github_output=true; shift ;;
+    --templates) templates=true; shift ;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+    *) die "godot-ci: unknown argument '$1' (see --help)" ;;
+  esac
+done
+
+# Folders that never hold the user's own project files.
+prune=(-path '*/.git' -o -path '*/.godot' -o -path '*/addons' -o -path '*/bin' -o -path '*/obj'
+       -o -path '*/node_modules' -o -path '*/.godot-pipelines' -o -path '*/gdunit4_testadapter*')
+
+# --- Detection -------------------------------------------------------------------------------------
+detect_project() {
+  [[ -n "$project" ]] && return
+  # The shallowest project.godot wins.
+  project="$(find . \( "${prune[@]}" \) -prune -o -name project.godot -print |
+    awk -F/ '{ print NF "\t" $0 }' | sort -n | head -n1 | cut -f2)"
+  [[ -n "$project" ]] || die "No project.godot found under $(pwd); pass --project"
+  project="$(dirname "$project")"
+}
+
+detect_solution() {
+  [[ -n "$solution" ]] && return
+  # Walk up from the project to the repository root (or the filesystem root).
+  local dir stop
+  dir="$(cd "$project" && pwd)"
+  stop="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || echo /)"
+  while :; do
+    solution="$(find "$dir" -maxdepth 1 \( -name '*.sln' -o -name '*.slnx' \) | sort | head -n1)"
+    [[ -n "$solution" || "$dir" == "$stop" || "$dir" == "/" ]] && break
+    dir="$(dirname "$dir")"
+  done
+  [[ -n "$solution" ]] || solution="$(find "$project" -maxdepth 1 -name '*.csproj' | sort | head -n1)"
+}
+
+detect_godot_version() {
+  [[ -n "$godot_version" ]] && return
+  godot_version="$(grep -ohE 'Godot\.NET\.Sdk/[0-9]+\.[0-9]+(\.[0-9]+)?(-[a-z]+[0-9]*)?' "$project"/*.csproj 2>/dev/null |
+    head -n1 | cut -d/ -f2 || true)"
+  godot_version="${godot_version:-${GODOT_VERSION:-4.6.1}}"
+  # Godot.NET.Sdk uses 4.7.0-rc.1 style; Godot's own release tags use 4.7-rc1.
+  godot_version="${godot_version/-rc./-rc}"; godot_version="${godot_version/-beta./-beta}"
+  godot_version="${godot_version/-dev./-dev}"
+}
+
+# res:// path of the scene whose script calls GoTest.RunTests, or empty for the main scene.
+detect_godottest_scene() {
+  local script scene
+  script="$(grep -rl --include='*.cs' 'GoTest.RunTests' "$project" 2>/dev/null | grep -vE '/(bin|obj|\.godot)/' | head -n1 || true)"
+  [[ -n "$script" ]] || return 0
+  script="res://${script#"$project"/}"
+  scene="$(grep -rlF --include='*.tscn' "path=\"$script\"" "$project" 2>/dev/null | head -n1 || true)"
+  [[ -z "$scene" ]] || echo "res://${scene#"$project"/}"
+}
+
+has_test_projects() {
+  [[ -n "$solution" ]] || return 1
+  find "$(dirname "$solution")" \( "${prune[@]}" \) -prune -o -name '*.csproj' \
+    -exec grep -lE 'Microsoft\.NET\.Test\.Sdk|gdUnit4\.test\.adapter' {} + 2>/dev/null | grep -q .
+}
+
+detect_runners() {
+  if [[ -n "$runners" ]]; then
+    [[ "$runners" != none ]] || runners=""
+    return 0
+  fi
+  local found=()
+  # dotnet test on the solution covers xUnit/NUnit/MSTest and gdUnit4Net suites alike.
+  has_test_projects && found+=(dotnet)
+  grep -qs 'Chickensoft.GoDotTest' "$project"/*.csproj && found+=(godottest)
+  find "$project" \( "${prune[@]}" \) -prune -o -name '*.gd' -exec grep -lE '^extends +GutTest' {} + 2>/dev/null |
+    grep -q . && found+=(gut)
+  grep -q '^run/main_scene=' "$project/project.godot" && found+=(smoke)
+  runners="$(IFS=,; echo "${found[*]}")"
+}
+
+# GUT release that matches the Godot minor version.
+gut_tag() {
+  case "${godot_version%.*}" in
+    4.7*) echo v9.7.1 ;; 4.6*) echo v9.6.1 ;; 4.5*) echo v9.5.0 ;; 4.4*) echo v9.4.0 ;;
+    *) die "No known GUT release for Godot $godot_version; install addons/gut yourself" ;;
+  esac
+}
+
+all_presets() {
+  [[ -f "$project/export_presets.cfg" ]] || return 0
+  sed -n 's/^name="\(.*\)"$/\1/p' "$project/export_presets.cfg"
+}
+
+detect_project
+detect_solution
+detect_godot_version
+detect_runners
+godottest_scene="$(detect_godottest_scene)"
+if [[ ${#presets[@]} -eq 0 ]]; then
+  # No mapfile: macOS still ships bash 3.2.
+  while IFS= read -r preset; do presets+=("$preset"); done < <(all_presets)
+fi
+
+# Artifact-friendly project name: config/name from project.godot, else the folder name.
+name="$(sed -n 's/^config\/name="\(.*\)"$/\1/p' "$project/project.godot" | head -n1)"
+name="$(printf '%s' "${name:-$(basename "$(cd "$project" && pwd)")}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/--*/-/g; s/-$//')"
+
+if [[ "$command" == detect ]]; then
+  presets_json="$(printf '%s\n' "${presets[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')"
+  cat <<OUT
+project=$project
+name=$name
+solution=$solution
+godot-version=$godot_version
+runners=$runners
+godottest-scene=$godottest_scene
+presets=$presets_json
+OUT
+  if $github_output && [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    {
+      echo "project=$project"; echo "name=$name"; echo "solution=$solution"; echo "godot-version=$godot_version"
+      echo "runners=$runners"; echo "presets=$presets_json"
+    } >> "$GITHUB_OUTPUT"
+  fi
+  exit 0
+fi
+
+# --- Setup -----------------------------------------------------------------------------------------
+setup() {
+  local version="${godot_version%%-*}" release="stable" args=()
+  [[ "$godot_version" == *-* ]] && release="${godot_version#*-}"
+  # A Godot you point at yourself is used as-is.
+  if [[ -n "${GODOT_BIN:-}" && "${GODOT_CI_INSTALLED:-}" != "$godot_version" ]] && ! $templates; then
+    log "Using GODOT_BIN=$GODOT_BIN"
+    return
+  fi
+  $templates && args+=(--templates)
+  GODOT_VERSION="$version" GODOT_RELEASE="$release" "$here/install.sh" "${args[@]}" | grep -v '^\[godot-ci\] Ready' || true
+  # shellcheck disable=SC1091
+  source "${GODOT_TOOLS_DIR:-$HOME/.godot-ci}/env.sh"
+  export GODOT_CI_INSTALLED="$godot_version"
+}
+
+build() {
+  if [[ ",$runners," == *",gut,"* && ! -f "$project/addons/gut/gut_cmdln.gd" ]]; then
+    "$here/addons.sh" --project "$project" "gut@$(gut_tag)"
+  fi
+  local args=(--project "$project")
+  [[ -n "$solution" ]] && args+=(--solution "$solution")
+  "$here/build.sh" "${args[@]}"
+}
+
+run_tests() {
+  [[ -n "$runners" ]] || { log "No test runners detected or selected; build only"; return 0; }
+  local runner failed=() args
+  rm -rf "$results"
+  IFS=, read -ra list <<< "$runners"
+  for runner in "${list[@]}"; do
+    args=(--runner "$runner" --project "$project" --results "$results/$runner" --frames "$frames")
+    [[ -n "$solution" ]] && args+=(--solution "$solution")
+    [[ -n "$filter" ]] && args+=(--filter "$filter")
+    $coverage && args+=(--coverage)
+    [[ "$runner" == godottest && -n "$godottest_scene" ]] && args+=(--scene "$godottest_scene")
+    "$here/test.sh" "${args[@]}" || failed+=("$runner")
+  done
+  $coverage && merge_coverage
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    die "Failed runners: ${failed[*]} (results in $results)"
+  fi
+  log "All runners passed: $runners"
+}
+
+# One combined report across runners: $results/coverage/index.html
+merge_coverage() {
+  compgen -G "$results/*/coverage/*.cobertura.xml" >/dev/null || return 0
+  local tool="${GODOT_TOOLS_DIR:-$HOME/.godot-ci}/tools/reportgenerator"
+  "$tool" "-reports:$results/*/coverage/*.cobertura.xml" "-targetdir:$results/coverage" \
+    "-reporttypes:Html;TextSummary" "-title:Coverage" >/dev/null
+  log "Coverage: $(grep -m1 'Line coverage' "$results/coverage/Summary.txt" | tr -s ' ') -> $results/coverage/index.html"
+}
+
+run_exports() {
+  [[ ${#presets[@]} -gt 0 ]] || die "No export presets in $project/export_presets.cfg"
+  local preset
+  for preset in "${presets[@]}"; do
+    "$here/export.sh" --project "$project" --preset "$preset" \
+      --output-dir "$output/$(printf '%s' "$preset" | tr -c 'A-Za-z0-9._-' '-')"
+  done
+}
+
+log "Project $project · Godot $godot_version · solution ${solution:-none} · runners ${runners:-none}"
+case "$command" in
+  setup) setup ;;
+  build) setup; build ;;
+  test) setup; build; run_tests ;;
+  export) templates=true; setup; build; run_exports ;;
+esac
