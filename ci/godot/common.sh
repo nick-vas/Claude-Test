@@ -33,16 +33,28 @@ resolve_dotnet_target() {
   echo "$found"
 }
 
+# Engine-internal messages that say nothing about the project. Each entry is a regex; extend the list
+# per project with GODOT_CI_IGNORE_ERRORS (a regex, e.g. 'some message|another message').
+GODOT_CI_KNOWN_NOISE=(
+  # macOS: the Android export plugin reads editor settings during headless shutdown (timing-dependent).
+  'EditorSettings not instantiated yet when getting setting'
+)
+
 # Godot occasionally exits 0 after printing errors, so scan its log too.
 check_godot_log() {
   local logfile="$1" pattern='^ *(SCRIPT ERROR|ERROR|USER ERROR):|Unhandled [Ee]xception|Failed to load script'
+  local ignore
+  ignore="$(IFS='|'; echo "${GODOT_CI_KNOWN_NOISE[*]}")${GODOT_CI_IGNORE_ERRORS:+|$GODOT_CI_IGNORE_ERRORS}"
   # Strip ANSI colour codes before matching (no sed -i: BSD and GNU disagree on it).
   local plain
   plain="$(mktemp)"
   sed $'s/\x1b\\[[0-9;]*m//g' "$logfile" > "$plain" && mv "$plain" "$logfile"
-  if grep -Eq "$pattern" "$logfile"; then
+  if grep -E "$pattern" "$logfile" | grep -Evq "$ignore"; then
     echo "[godot-ci] Godot reported errors:" >&2
-    grep -E -A3 "$pattern" "$logfile" | head -n 60 >&2
+    grep -E -A3 "$pattern" "$logfile" | grep -Ev "$ignore" | head -n 60 >&2
     return 1
+  fi
+  if grep -E "$pattern" "$logfile" | grep -Eq "$ignore"; then
+    log "Ignored known engine noise: $(grep -E "$pattern" "$logfile" | grep -E "$ignore" | head -n1)"
   fi
 }

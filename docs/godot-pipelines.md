@@ -187,6 +187,11 @@ Add `-s -- --templates` after `bash` if sessions should also export builds (abou
 
 ## Project requirements
 
+- Builds, exports and smoke runs fail on any `ERROR:` or `SCRIPT ERROR:` Godot prints, even when it exits 0.
+  A short list of engine-internal messages that say nothing about your project is ignored (see
+  `GODOT_CI_KNOWN_NOISE` in `ci/godot/common.sh`). To ignore more, set the `GODOT_CI_IGNORE_ERRORS`
+  environment variable to a regex.
+
 - If your `.sln` isn't next to `project.godot`, set `dotnet/project/solution_directory` in
   `project.godot`, or exports fail with *"no solution file was found"*. `export.sh` catches this; Godot alone
   exits 0 without exporting the C# code.
