@@ -3,3 +3,5 @@ bin/
 obj/
 build/
 test-results/
+game/addons/gut/
+game/gdunit4_testadapter*/

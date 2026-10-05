@@ -10,12 +10,24 @@ inputs:
   configuration:
     description: Debug or Release
     default: Debug
+  addons:
+    description: "Space-separated addons to install before building, e.g. gut@v9.6.1 (see ci/godot/addons.sh)"
+    default: ""
   allow-import-errors:
     description: Don't fail on errors Godot prints during import
     default: "false"
 runs:
   using: composite
   steps:
+    - if: inputs.addons != ''
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project-path }}
+        ADDONS: ${{ inputs.addons }}
+      run: |
+        read -ra specs <<< "$ADDONS"
+        "$GITHUB_ACTION_PATH/../../../ci/godot/addons.sh" --project "$PROJECT" "${specs[@]}"
+
     - shell: bash
       env:
         PROJECT: ${{ inputs.project-path }}

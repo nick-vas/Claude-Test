@@ -21,5 +21,8 @@ jobs:
       godot-version: "4.6.1"
       project-path: .                # folder containing project.godot
       # solution: MyGame.sln         # default: first .sln/.csproj in project-path
+      # addons: gut@v9.6.1          # for the gut runner
+      # Pick any of: dotnet, gdunit4, godottest, gut, smoke (see docs/godot-pipelines.md)
       test-runners: '["dotnet", "smoke"]'
+      coverage: true
       export-presets: '["Linux", "Windows"]'   # names from export_presets.cfg; '[]' to skip

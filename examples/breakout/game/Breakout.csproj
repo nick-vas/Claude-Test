@@ -3,8 +3,24 @@
     <TargetFramework>net8.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Nullable>enable</Nullable>
+    <!-- Test code and test packages stay out of release exports. -->
+    <IncludeTests Condition="'$(Configuration)' != 'ExportRelease'">true</IncludeTests>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../src/Breakout.Core/Breakout.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IncludeTests)' == 'true'">
+    <!-- gdUnit4Net: scene tests through `dotnet test` (test runner "gdunit4"). -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="gdUnit4.api" Version="5.0.0" />
+    <PackageReference Include="gdUnit4.test.adapter" Version="3.0.0" />
+    <PackageReference Include="coverlet.collector" Version="10.1.0" />
+    <!-- GoDotTest: in-engine suites run by the game itself (test runner "godottest"). -->
+    <PackageReference Include="Chickensoft.GoDotTest" Version="2.0.31" />
+    <PackageReference Include="Shouldly" Version="4.3.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(IncludeTests)' != 'true'">
+    <!-- gdUnit4Net generates gdunit4_testadapter_v5/ next to the project when tests run. -->
+    <Compile Remove="test/**;gdunit4_testadapter*/**" />
   </ItemGroup>
 </Project>
