@@ -7,27 +7,28 @@ function Find-GodotProject {
     return $file.DirectoryName
 }
 
+# The nearest .sln at or above a C# project that includes the game's .csproj (an unrelated solution
+# higher up in a monorepo is skipped), else the .csproj itself. GDScript projects have none.
 function Find-Solution([string]$ProjectDir) {
-    # Walk up from the project to the repository root (or the filesystem root).
-    $stop = (& git -C $ProjectDir rev-parse --show-toplevel 2>$null)
+    $csproj = Get-ChildItem -LiteralPath $ProjectDir -File -Filter '*.csproj' | Sort-Object Name | Select-Object -First 1
+    if (-not $csproj) { return '' }
+    $stop = Get-GitRoot $ProjectDir
     $dir = Get-Item -LiteralPath $ProjectDir
     while ($dir) {
         $sln = Get-ChildItem -LiteralPath $dir.FullName -File |
-            Where-Object { $_.Extension -in '.sln', '.slnx' } | Sort-Object Name | Select-Object -First 1
+            Where-Object { $_.Extension -in '.sln', '.slnx' -and (Get-Content -LiteralPath $_.FullName -Raw).Contains($csproj.Name) } |
+            Sort-Object Name | Select-Object -First 1
         if ($sln) { return $sln.FullName }
-        if ($stop -and ($dir.FullName -replace '\\', '/') -eq ($stop -replace '\\', '/')) { break }
+        if (-not $stop -or ($dir.FullName -replace '\\', '/') -eq ($stop -replace '\\', '/')) { break }
         $dir = $dir.Parent
     }
-    $csproj = Get-ChildItem -LiteralPath $ProjectDir -File -Filter '*.csproj' | Sort-Object Name | Select-Object -First 1
-    if ($csproj) { return $csproj.FullName }
-    return ''
+    return $csproj.FullName
 }
 
 function Get-GodotVersionFromProject([string]$ProjectDir) {
     foreach ($csproj in Get-ChildItem -LiteralPath $ProjectDir -File -Filter '*.csproj') {
         if ((Get-Content -LiteralPath $csproj.FullName -Raw) -match 'Godot\.NET\.Sdk/(?<v>\d+\.\d+(?:\.\d+)?(?:-[a-z]+\.?\d*)?)') {
-            # Godot.NET.Sdk writes 4.7.0-rc.1; Godot's release tags are 4.7-rc1.
-            return $Matches.v -replace '-(rc|beta|dev)\.', '-$1'
+            return $Matches.v
         }
     }
     return ''
@@ -64,6 +65,31 @@ function Get-ExportPresets([string]$ProjectDir) {
     return @(Get-Content -LiteralPath $file | Where-Object { $_ -match '^name="(.*)"$' } | ForEach-Object { $Matches[1] })
 }
 
+# Platform and export_path of each preset, keyed by preset name.
+function Get-ExportPresetDetails([string]$ProjectDir) {
+    $file = Join-Path $ProjectDir 'export_presets.cfg'
+    $details = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $file)) { return $details }
+    $current = $null
+    foreach ($line in Get-Content -LiteralPath $file) {
+        if ($line -match '^\[preset\.\d+\]$') { $current = [ordered]@{ Name = ''; Platform = ''; ExportPath = '' } }
+        elseif ($line -match '^\[') { $current = $null }
+        elseif ($current -and $line -match '^(?<key>name|platform|export_path)="(?<value>.*)"$') {
+            switch ($Matches.key) {
+                'name' { $current.Name = $Matches.value; $details[$Matches.value] = $current }
+                'platform' { $current.Platform = $Matches.value }
+                'export_path' { $current.ExportPath = $Matches.value }
+            }
+        }
+    }
+    return $details
+}
+
+# Whether this machine can launch a build for the given export platform.
+function Test-CanRunPlatform([string]$Platform) {
+    return ($IsWindows -and $Platform -eq 'Windows Desktop') -or ($IsLinux -and $Platform -match '^Linux')
+}
+
 function Get-ProjectInfo {
     param([string]$Project, [string]$Solution, [string]$GodotVersion, [string[]]$Runners)
 
@@ -75,9 +101,13 @@ function Get-ProjectInfo {
 
     $version = if ($GodotVersion) { $GodotVersion } else { Get-GodotVersionFromProject $projectDir }
     if (-not $version) { $version = if ($env:GODOT_VERSION) { $env:GODOT_VERSION } else { '4.6.1' } }
+    $version = ConvertTo-GodotVersion $version
+    $isCSharp = @(Get-ChildItem -LiteralPath $projectDir -File -Filter '*.csproj').Count -gt 0
 
     $selected = @($Runners | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ($selected.Count -eq 0) {
+        # Every project gets the load check; it needs no tests.
+        $selected += 'validate'
         # dotnet test on the solution covers xUnit/NUnit/MSTest and gdUnit4Net suites alike.
         if ($sln) {
             $csprojs = @(Find-ProjectFiles -Root (Split-Path $sln) -Filter '*.csproj')
@@ -90,7 +120,7 @@ function Get-ProjectInfo {
     } elseif ($selected -contains 'none') {
         $selected = @()
     }
-    $valid = 'dotnet', 'gdunit4', 'godottest', 'gut', 'smoke'
+    $valid = 'validate', 'dotnet', 'gdunit4', 'godottest', 'gut', 'smoke'
     $unknown = @($selected | Where-Object { $_ -notin $valid })
     if ($unknown) { Stop-GodotCi "Unknown runner(s) $($unknown -join ', '); use $($valid -join ', ')" }
 
@@ -98,11 +128,13 @@ function Get-ProjectInfo {
 
     [pscustomobject]@{
         ProjectDir     = $projectDir
+        IsCSharp       = $isCSharp
         Name           = ConvertTo-SafeName $name
         Solution       = $sln
         GodotVersion   = $version
-        Runners        = $selected
+        # @(...): PowerShell unrolls one-item and empty arrays returned from functions.
+        Runners        = @($selected)
         GoDotTestScene = Find-GoDotTestScene $projectDir
-        Presets        = Get-ExportPresets $projectDir
+        Presets        = @(Get-ExportPresets $projectDir)
     }
 }

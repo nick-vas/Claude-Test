@@ -66,8 +66,8 @@ function Write-Annotation([string]$Runner, $Failure) {
     Write-Host "::error $($props -join ',')::$(Escape $message)"
 }
 
-# Summarises one runner's results. Returns $true when tests ran and none failed. A run that reports no
-# tests at all fails, so a misconfigured runner can't pass silently.
+# Summarises one runner's results and returns them; .Ok is true when tests ran and none failed. A run
+# that reports no tests at all fails, so a misconfigured runner can't pass silently.
 function Write-TestSummary([string]$Runner, [string]$ResultsDir, [int]$ExitCode) {
     $totals = New-TestTotals
     $files = Get-ChildItem -LiteralPath $ResultsDir -Recurse -File |
@@ -83,6 +83,7 @@ function Write-TestSummary([string]$Runner, [string]$ResultsDir, [int]$ExitCode)
     $ok = $ExitCode -eq 0 -and $totals.Failed -eq 0 -and $totals.Total -gt 0
     Write-CiLog "${Runner}: $($totals.Passed) passed, $($totals.Failed) failed, $($totals.Skipped) skipped"
     if ($totals.Total -eq 0) { Write-CiLog "$Runner reported no test results (exit code $ExitCode)" }
+    elseif ($ExitCode -ne 0) { Write-CiLog "$Runner exited with code $ExitCode" }
 
     if ($env:GITHUB_ACTIONS) {
         $totals.Failures | Select-Object -First 20 | ForEach-Object { Write-Annotation $Runner $_ }
@@ -103,17 +104,34 @@ function Write-TestSummary([string]$Runner, [string]$ResultsDir, [int]$ExitCode)
         }
         Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $out -Encoding utf8
     }
-    return $ok
+    return [pscustomobject]@{
+        Runner = $Runner; Ok = $ok; Total = $totals.Total; Passed = $totals.Passed
+        Failed = $totals.Failed; Skipped = $totals.Skipped
+        Failures = @($totals.Failures | Select-Object -First 10 | ForEach-Object {
+            [pscustomobject]@{ Name = $_.Name; Message = ($_.Message.Trim() -split "`n")[0] } })
+    }
 }
 
-# A one-case JUnit file, for runners without their own report (smoke).
+# JUnit for runners without their own report. Each case: @{ Name = ...; Failure = '' or the reason }.
+function Write-JUnitCases([string]$Path, [string]$Suite, [object[]]$Cases) {
+    $e = { param($t) [System.Security.SecurityElement]::Escape([string]$t) }
+    $failed = @($Cases | Where-Object { $_.Failure }).Count
+    $xml = [System.Collections.Generic.List[string]]::new()
+    $xml.Add('<?xml version="1.0" encoding="UTF-8"?>')
+    $xml.Add("<testsuites><testsuite name=""$(& $e $Suite)"" tests=""$($Cases.Count)"" failures=""$failed"">")
+    foreach ($case in $Cases) {
+        $xml.Add("  <testcase classname=""$(& $e $Suite)"" name=""$(& $e $case.Name)"">")
+        if ($case.Failure) {
+            $xml.Add("    <failure message=""$(& $e ($case.Failure -split "`n")[0])"">$(& $e $case.Failure)</failure>")
+        }
+        $xml.Add('  </testcase>')
+    }
+    $xml.Add('</testsuite></testsuites>')
+    Set-Content -LiteralPath $Path -Value $xml -Encoding utf8
+}
+
 function Write-SingleCaseJUnit([string]$Path, [string]$Name, [bool]$Passed, [string]$Message) {
-    $e = { param($t) [System.Security.SecurityElement]::Escape($t) }
-    $failure = if ($Passed) { '' } else { "<failure message=""$(& $e ($Message.Split("`n")[0]))"">$(& $e $Message)</failure>" }
-    Set-Content -LiteralPath $Path -Encoding utf8 -Value @"
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuites><testsuite name="$(& $e $Name)" tests="1" failures="$(if ($Passed) { 0 } else { 1 })"><testcase classname="$(& $e $Name)" name="$(& $e $Name)">$failure</testcase></testsuite></testsuites>
-"@
+    Write-JUnitCases $Path $Name @(@{ Name = $Name; Failure = $(if ($Passed) { '' } else { $Message }) })
 }
 
 # Chickensoft GoDotTest prints results to the console only; turn its log into JUnit.
@@ -159,17 +177,47 @@ function ConvertFrom-GoDotTestLog([string]$LogFile, [string]$JUnitFile) {
 function Merge-Coverage([string]$ResultsDir) {
     $reports = @(Get-ChildItem -LiteralPath $ResultsDir -Recurse -File -Filter '*.cobertura.xml' |
         Where-Object { $_.FullName -notmatch '[\\/]In[\\/]' })
-    if ($reports.Count -eq 0) { Write-CiLog 'No coverage data was produced'; return }
+    if ($reports.Count -eq 0) { Write-CiLog 'No coverage data was produced'; return $null }
     $target = Join-Path $ResultsDir 'coverage'
     $tool = Get-DotnetTool 'dotnet-reportgenerator-globaltool' 'reportgenerator'
     Invoke-Checked $tool @("-reports:$(($reports.FullName) -join ';')", "-targetdir:$target",
         '-reporttypes:Html;MarkdownSummaryGithub;TextSummary', '-title:Coverage', '-verbosity:Warning')
     $line = Get-Content -LiteralPath (Join-Path $target 'Summary.txt') | Where-Object { $_ -match 'Line coverage' } | Select-Object -First 1
+    $percent = if ($line -match '([\d.]+)%') { [double]::Parse($Matches[1], [cultureinfo]::InvariantCulture) } else { $null }
+    if ($null -eq $percent) { Write-CiLog 'Coverage: no coverable lines were found'; return $null }
     Write-CiLog "Coverage: $($line.Trim()) -> $(Join-Path $target 'index.html')"
     if ($env:GITHUB_STEP_SUMMARY) {
         Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Value (
             @('<details><summary>Coverage</summary>', '') + (Get-Content -LiteralPath (Join-Path $target 'SummaryGithub.md')) + @('</details>', ''))
     }
+    return $percent
+}
+
+# summary.json (machine-readable, used for coverage baselines) and summary.md (used for PR comments).
+function Write-RunSummary([string]$ResultsDir, $Info, [object[]]$Results, $Coverage, [double]$MinCoverage) {
+    $ok = @($Results | Where-Object { -not $_.Ok }).Count -eq 0
+    $coverageOk = $MinCoverage -le 0 -or ($null -ne $Coverage -and $Coverage -ge $MinCoverage)
+    $summary = [ordered]@{
+        name = $Info.Name; godotVersion = $Info.GodotVersion; ok = ($ok -and $coverageOk)
+        runners = @($Results | ForEach-Object {
+            [ordered]@{ runner = $_.Runner; ok = $_.Ok; total = $_.Total; passed = $_.Passed; failed = $_.Failed
+                skipped = $_.Skipped; failures = @($_.Failures) } })
+        coverage = $Coverage; minCoverage = $MinCoverage
+    }
+    $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ResultsDir 'summary.json') -Encoding utf8
+
+    $mark = { param($good) if ($good) { 'pass' } else { 'FAIL' } }
+    $md = [System.Collections.Generic.List[string]]::new()
+    $md.Add("| Runner | Result | Passed | Failed | Skipped |"); $md.Add('|---|---|---:|---:|---:|')
+    foreach ($r in $Results) { $md.Add("| $($r.Runner) | $(& $mark $r.Ok) | $($r.Passed) | $($r.Failed) | $($r.Skipped) |") }
+    if ($null -ne $Coverage) {
+        $line = "**Line coverage: $Coverage%**"
+        if ($MinCoverage -gt 0) { $line += " (minimum $MinCoverage%: $(& $mark $coverageOk))" }
+        $md.Add(''); $md.Add($line)
+    }
+    $failures = @($Results | ForEach-Object { $runner = $_.Runner; $_.Failures | ForEach-Object { "- ``$runner`` **$($_.Name)**: $($_.Message)" } })
+    if ($failures) { $md.Add(''); $md.Add('**Failures**'); $failures | Select-Object -First 15 | ForEach-Object { $md.Add($_) } }
+    Set-Content -LiteralPath (Join-Path $ResultsDir 'summary.md') -Value $md -Encoding utf8
 }
 
 # Installs a .NET global tool into the shared tools folder once; returns its path.

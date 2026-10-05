@@ -11,14 +11,14 @@
 .EXAMPLE
     ./ci/godot/godot-ci.ps1 test -Runners gut -Filter test_combo
 .EXAMPLE
-    ./ci/godot/godot-ci.ps1 export -Preset Windows
+    ./ci/godot/godot-ci.ps1 export -Preset Windows -Run    # export, then launch the build to check it starts
 #>
 [CmdletBinding()]
 param(
     # test (default): build, then run every test runner. build: install, addons, compile, import.
     # export: build, then export presets. setup: install Godot/.NET only. detect: print what was found.
     [Parameter(Position = 0)]
-    [ValidateSet('test', 'build', 'export', 'setup', 'detect')]
+    [ValidateSet('test', 'build', 'export', 'setup', 'detect', 'doctor', 'init')]
     [string]$Command = 'test',
 
     # Folder with project.godot. Default: the shallowest one under the current folder.
@@ -27,14 +27,18 @@ param(
     [string]$Solution,
     # e.g. 4.6.1 or 4.7-rc1. Default: from Godot.NET.Sdk in the csproj, else 4.6.1.
     [string]$GodotVersion,
-    # dotnet, gdunit4, godottest, gut, smoke (or none to only build). Default: detected.
+    # validate, dotnet, gdunit4, godottest, gut, smoke (or none to only build). Default: detected.
     [string[]]$Runners,
     # Passed to each runner's own filter.
     [string]$Filter,
     # Collect coverage (dotnet, gdunit4, godottest) into one report.
     [switch]$Coverage,
+    # Fail when line coverage is below this percentage (implies -Coverage).
+    [double]$MinCoverage = 0,
     # Presets to export. Default: every preset in export_presets.cfg.
     [string[]]$Preset,
+    # export: also launch each build this machine can run (e.g. Windows builds on Windows) and fail on errors.
+    [switch]$Run,
     [string]$Results = 'test-results',
     [string]$Output = 'build',
     # Frames the smoke runner plays.
@@ -47,20 +51,24 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
-foreach ($lib in 'Common', 'Setup', 'Detect', 'Report', 'Runners') { . (Join-Path $PSScriptRoot "lib/$lib.ps1") }
+foreach ($lib in 'Common', 'Setup', 'Detect', 'Report', 'Runners', 'Doctor', 'Init') { . (Join-Path $PSScriptRoot "lib/$lib.ps1") }
 
 $info = Get-ProjectInfo -Project $Project -Solution $Solution -GodotVersion $GodotVersion -Runners $Runners
 $presets = @(if ($Preset) { $Preset | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ } } else { $info.Presets })
 
 if ($Command -eq 'detect') {
+    $platforms = [ordered]@{}
+    foreach ($detail in (Get-ExportPresetDetails $info.ProjectDir).Values) { $platforms[$detail.Name] = $detail.Platform }
     $values = [ordered]@{
         'project'         = $info.ProjectDir
+        'csharp'          = $info.IsCSharp.ToString().ToLower()
         'name'            = $info.Name
         'solution'        = $info.Solution
         'godot-version'   = $info.GodotVersion
         'runners'         = $info.Runners -join ','
         'godottest-scene' = $info.GoDotTestScene
         'presets'         = ConvertTo-Json -Compress -InputObject @($presets)
+        'preset-platforms' = ConvertTo-Json -Compress -InputObject $platforms
     }
     $values.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }
     if ($GitHubOutput -and $env:GITHUB_OUTPUT) {
@@ -76,12 +84,14 @@ function Invoke-Setup([switch]$WithTemplates) {
         return
     }
     $version, $release = $info.GodotVersion -split '-', 2
-    Install-GodotTools -Version $version -Release ($release ? $release : 'stable') -Templates:$WithTemplates
+    Install-GodotTools -Version $version -Release ($release ? $release : 'stable') -Templates:$WithTemplates -Mono $info.IsCSharp
     $env:GODOT_CI_INSTALLED = '1'
 }
 
 function Invoke-Build {
-    if ($info.Runners -contains 'gut' -and -not (Test-Path -LiteralPath (Join-Path $info.ProjectDir 'addons/gut/gut_cmdln.gd'))) {
+    # GUT whenever GUT tests exist, not only for the gut runner: validate loads those scripts too.
+    $needsGut = $info.Runners -contains 'gut' -or @(Get-GutTestFiles $info.ProjectDir).Count -gt 0
+    if ($needsGut -and -not (Test-Path -LiteralPath (Join-Path $info.ProjectDir 'addons/gut/gut_cmdln.gd'))) {
         Install-Addon $info.ProjectDir "gut@$(Get-GutTag $info.GodotVersion)"
     }
     if ($info.Solution) {
@@ -100,37 +110,50 @@ function Invoke-Build {
     Write-CiLog 'Build OK'
 }
 
+# -Results is wiped before each run, so refuse folders whose loss would hurt: the current folder, the
+# project, anything containing either, or a drive root.
+function Assert-SafeToClear([string]$Dir) {
+    $norm = { param($p) ([System.IO.Path]::GetFullPath($p).TrimEnd('\', '/') -replace '\\', '/') + '/' }
+    $target = & $norm $Dir
+    foreach ($precious in $PWD.Path, $info.ProjectDir) {
+        if ((& $norm $precious).StartsWith($target, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-GodotCi "-Results $Dir would delete $precious; point it at a dedicated folder such as test-results"
+        }
+    }
+}
+
 function Invoke-Tests {
     if ($info.Runners.Count -eq 0) { Write-CiLog 'No test runners detected or selected; build only'; return }
+    $collect = $Coverage -or $MinCoverage -gt 0
     $resultsDir = [System.IO.Path]::GetFullPath($Results)
     if (Test-Path -LiteralPath $resultsDir) { Remove-Item -Recurse -Force $resultsDir }
-    $failed = @()
-    foreach ($runner in $info.Runners) {
-        $ok = Invoke-TestRunner -Runner $runner -Info $info -ResultsDir (Join-Path $resultsDir $runner) `
-            -Filter $Filter -Coverage ($Coverage -and $runner -notin 'gut', 'smoke') -Frames $Frames
-        if (-not $ok) { $failed += $runner }
-    }
-    if ($Coverage) { Merge-Coverage $resultsDir }
+    $runs = @(foreach ($runner in $info.Runners) {
+        Invoke-TestRunner -Runner $runner -Info $info -ResultsDir (Join-Path $resultsDir $runner) `
+            -Filter $Filter -Coverage ($collect -and $runner -notin 'gut', 'smoke', 'validate') -Frames $Frames
+    })
+    $percent = if ($collect) { Merge-Coverage $resultsDir } else { $null }
+    Write-RunSummary $resultsDir $info $runs $percent $MinCoverage
+
+    $failed = @($runs | Where-Object { -not $_.Ok } | ForEach-Object Runner)
     if ($failed.Count -gt 0) { Stop-GodotCi "Failed runners: $($failed -join ', ') (results in $resultsDir)" }
+    if ($MinCoverage -gt 0) {
+        if ($null -eq $percent) { Stop-GodotCi "-MinCoverage $MinCoverage was set, but no coverage was collected" }
+        if ($percent -lt $MinCoverage) { Stop-GodotCi "Line coverage $percent% is below the minimum of $MinCoverage%" }
+        Write-CiLog "Line coverage $percent% meets the minimum of $MinCoverage%"
+    }
     Write-CiLog "All runners passed: $($info.Runners -join ', ')"
 }
 
 function Invoke-Export {
     if ($presets.Count -eq 0) { Stop-GodotCi "No export presets in $(Join-Path $info.ProjectDir 'export_presets.cfg')" }
-    $cfg = Get-Content -LiteralPath (Join-Path $info.ProjectDir 'export_presets.cfg')
+    $details = Get-ExportPresetDetails $info.ProjectDir
     foreach ($name in $presets) {
-        if ($name -notin $info.Presets) { Stop-GodotCi "Preset '$name' not found; the project has: $($info.Presets -join ', ')" }
-        # export_path of the matching [preset.N] section names the output file.
-        $exportPath = ''; $inPreset = $false
-        foreach ($line in $cfg) {
-            if ($line -match '^\[preset\.\d+\]$') { $inPreset = $false }
-            elseif ($line -eq "name=""$name""") { $inPreset = $true }
-            elseif ($inPreset -and $line -match '^export_path="(.*)"$') { $exportPath = $Matches[1]; break }
-        }
-        if (-not $exportPath) { Stop-GodotCi "Preset '$name' has no export_path" }
+        if (-not $details.Contains($name)) { Stop-GodotCi "Preset '$name' not found; the project has: $($info.Presets -join ', ')" }
+        $preset = $details[$name]
+        if (-not $preset.ExportPath) { Stop-GodotCi "Preset '$name' has no export_path" }
         $dir = Join-Path ([System.IO.Path]::GetFullPath($Output)) (ConvertTo-SafeName $name)
         New-Item -ItemType Directory -Force $dir | Out-Null
-        $file = Join-Path $dir (Split-Path $exportPath -Leaf)
+        $file = Join-Path $dir (Split-Path $preset.ExportPath -Leaf)
 
         Start-LogGroup "Export '$name' -> $file"
         $log = [System.IO.Path]::GetTempFileName()
@@ -140,11 +163,34 @@ function Invoke-Export {
         if (-not (Test-Path -LiteralPath $file)) { Stop-GodotCi "Export '$name' finished but $file was not created" }
         Assert-GodotLogClean $log "Export '$name'"
         Write-CiLog ("Exported {0:N0} MB to {1}" -f ((Get-ChildItem -LiteralPath $dir -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), $dir)
+
+        if ($Run) { Test-ExportedBuild $name $preset.Platform $file }
     }
 }
 
+# Launches the exported game headless, as a player would get it, and fails on any engine error. This catches
+# what the editor hides: missing assets, code trimmed from the build, test-only dependencies.
+function Test-ExportedBuild([string]$Name, [string]$Platform, [string]$File) {
+    if (-not (Test-CanRunPlatform $Platform)) {
+        Write-CiLog "Can't launch the '$Name' build ($Platform) on this machine; skipped. Run export -Run on a matching OS."
+        return
+    }
+    if (-not $IsWindows) { Invoke-Checked chmod @('+x', $File) }
+    Start-LogGroup "Run exported '$Name' ($Frames frames)"
+    $log = [System.IO.Path]::GetTempFileName()
+    $code = Invoke-Logged $File @('--headless', '--quit-after', "$Frames") $log
+    Stop-LogGroup
+    if ($code -ne 0) { Stop-GodotCi "The exported '$Name' build exited with $code" }
+    Assert-GodotLogClean $log "The exported '$Name' build"
+    Write-CiLog "Exported '$Name' build ran $Frames frames without errors"
+}
+
 Write-CiLog "Project $($info.ProjectDir) | Godot $($info.GodotVersion) | solution $(if ($info.Solution) { $info.Solution } else { 'none' }) | runners $(if ($info.Runners) { $info.Runners -join ',' } else { 'none' })"
+# Before any slow setup: refuse a -Results folder that wiping would hurt.
+if ($Command -eq 'test') { Assert-SafeToClear $Results }
 switch ($Command) {
+    'doctor' { Invoke-Doctor $info }
+    'init' { Initialize-Project $info }
     'setup' { Invoke-Setup -WithTemplates:$Templates }
     'build' { Invoke-Setup; Invoke-Build }
     'test' { Invoke-Setup; Invoke-Build; Invoke-Tests }

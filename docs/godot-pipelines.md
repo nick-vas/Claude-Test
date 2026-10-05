@@ -34,6 +34,7 @@ WAT (~310 stars) only supports Godot 3.
 | `godottest` | the Godot csproj references `Chickensoft.GoDotTest` | the scene whose script calls `GoTest.RunTests`, else the main scene | suite name | ✅ via coverlet |
 | `gut` | a `.gd` file `extends GutTest` | `.gutconfig.json` if present, else `test_*.gd` in those folders | test name | – |
 | `smoke` | `project.godot` has a main scene | the main scene for N frames | – | – |
+| `validate` | always | loads every script, scene and resource (outside `addons/`) and instantiates each scene; one test case per file | – | – |
 
 The `dotnet` runner already covers gdUnit4Net suites, so `gdunit4` is only useful to run engine tests on
 their own.
@@ -90,14 +91,19 @@ exclude_filter="test/*, addons/gut/*, gdunit4_testadapter*/*"
 ## How it fits together
 
 ```
-ci/godot/godot-ci.ps1           the entry point: detect -> setup -> build -> test / export
-ci/godot/lib/Common.ps1         logging, running programs, Godot log checks, file search
-ci/godot/lib/Setup.ps1          .NET SDK, Godot .NET editor, export templates, addons (GUT)
-ci/godot/lib/Detect.ps1         project, solution, Godot version, runners, GoDotTest scene, presets
-ci/godot/lib/Runners.ps1        dotnet | gdunit4 | godottest | gut | smoke
-ci/godot/lib/Report.ps1         JUnit/TRX -> summary, failure annotations, zero-tests check, coverage
-.github/actions/godot           composite action: detect, cache, run godot-ci.ps1, upload artifacts
-.github/workflows/godot.yml     reusable workflow: test job, then one export job per preset
+ci/godot/godot-ci.ps1               the entry point: detect -> setup -> build -> test / export
+ci/godot/lib/Common.ps1             logging, running programs, Godot log checks, file search
+ci/godot/lib/Setup.ps1              .NET SDK, Godot .NET editor, export templates, addons (GUT)
+ci/godot/lib/Detect.ps1             project, solution, Godot version, runners, GoDotTest scene, presets
+ci/godot/lib/Runners.ps1            validate | dotnet | gdunit4 | godottest | gut | smoke
+ci/godot/lib/Report.ps1             JUnit/TRX -> summaries, annotations, zero-tests check, coverage
+ci/godot/lib/Doctor.ps1             `doctor`: tool and project checks with fixes
+ci/godot/lib/Init.ps1               `init`: starter tests, .gitignore, export filters, CI workflow
+ci/godot/tools/validate.gd          the load check Godot runs for the validate runner
+ci/godot/tools/Publish-PrComment.ps1  the pull request summary comment (workflow only)
+ci/godot/tools/Publish-Release.ps1    zips exports into a GitHub Release (workflow only)
+.github/actions/godot               composite action: detect, cache, run godot-ci.ps1, upload artifacts
+.github/workflows/godot.yml         reusable workflow: test job, export jobs per preset, release job
 ```
 
 Everything goes through `godot-ci.ps1`, so a local run on Windows and a CI run on Linux do the same

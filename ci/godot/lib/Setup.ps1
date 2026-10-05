@@ -35,54 +35,76 @@ function Install-DotnetSdk([string]$Channel) {
         Stop-GodotCi ".NET $Channel SDK not found. Install it with: winget install Microsoft.DotNet.SDK.$($Channel.Split('.')[0])"
     }
     $root = Join-Path (Get-ToolsDir) 'dotnet'
+    $installed = $false
     try {
         $script = Join-Path (Get-ToolsDir) 'dotnet-install.sh'
         Save-Download 'https://dot.net/v1/dotnet-install.sh' $script
-        Invoke-Checked bash @($script, '--channel', $Channel, '--install-dir', $root, '--no-path')
+        # Invoke-Logged, not Invoke-Checked: a failure here must reach the apt fallback, not end the run.
+        $installed = (Invoke-Logged bash @($script, '--channel', $Channel, '--install-dir', $root, '--no-path')) -eq 0
     } catch {
-        # Sandboxed sessions may block Microsoft's CDN but allow the distro mirror.
-        Write-CiLog "dot.net unreachable; installing dotnet-sdk-$Channel with apt"
-        $aptGet = if ((& id -u) -ne '0') { @('sudo', 'apt-get') } else { @('apt-get') }
-        Invoke-Checked $aptGet[0] (@($aptGet | Select-Object -Skip 1) + @('update', '-qq'))
-        Invoke-Checked $aptGet[0] (@($aptGet | Select-Object -Skip 1) + @('install', '-y', '-qq', "dotnet-sdk-$Channel"))
+        Write-CiLog "dotnet-install.sh failed: $($_.Exception.Message)"
+    }
+    if ($installed) {
+        $env:DOTNET_ROOT = $root
+        $env:PATH = "$root$([IO.Path]::PathSeparator)$env:PATH"
         return
     }
-    $env:DOTNET_ROOT = $root
-    $env:PATH = "$root$([IO.Path]::PathSeparator)$env:PATH"
+    # Sandboxed sessions may block Microsoft's CDN but allow the distro mirror.
+    Write-CiLog "Microsoft's .NET download failed; installing dotnet-sdk-$Channel with apt"
+    # Spelled out rather than indexing an array: PowerShell unrolls a one-item array to a plain string.
+    $useSudo = (& id -u) -ne '0'
+    foreach ($arguments in @(@('update', '-qq'), @('install', '-y', '-qq', "dotnet-sdk-$Channel"))) {
+        if ($useSudo) { Invoke-Checked 'sudo' (@('apt-get') + $arguments) } else { Invoke-Checked 'apt-get' $arguments }
+    }
 }
 
-function Get-GodotPaths([string]$Version, [string]$Release) {
+# Download names and install paths. C# projects need the .NET ("mono") build; GDScript projects get the
+# standard build, which needs no .NET SDK and is smaller.
+function Get-GodotPaths([string]$Version, [string]$Release, [bool]$Mono = $true) {
     $tag = "$Version-$Release"
-    $toolsDir = Join-Path (Get-ToolsDir) $tag
+    $flavor = if ($Mono) { 'mono' } else { 'standard' }
+    $toolsDir = Join-Path (Get-ToolsDir) "$tag-$flavor"
     if ($IsWindows) {
         # The _console build writes to stdout, which logs and log checks need.
-        $package = "Godot_v${tag}_mono_win64"
-        $bin = Join-Path $toolsDir "$package/Godot_v${tag}_mono_win64_console.exe"
+        if ($Mono) {
+            $package = "Godot_v${tag}_mono_win64"
+            $bin = Join-Path $toolsDir "$package/Godot_v${tag}_mono_win64_console.exe"
+        } else {
+            $package = "Godot_v${tag}_win64.exe"
+            $bin = Join-Path $toolsDir "Godot_v${tag}_win64_console.exe"
+        }
         $templatesRoot = Join-Path $env:APPDATA 'Godot/export_templates'
     } elseif ($IsLinux) {
         $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'x86_64' }
-        $package = "Godot_v${tag}_mono_linux_$arch"
-        $bin = Join-Path $toolsDir "$package/Godot_v${tag}_mono_linux.$arch"
+        if ($Mono) {
+            $package = "Godot_v${tag}_mono_linux_$arch"
+            $bin = Join-Path $toolsDir "$package/Godot_v${tag}_mono_linux.$arch"
+        } else {
+            $package = "Godot_v${tag}_linux.$arch"
+            $bin = Join-Path $toolsDir $package
+        }
         $dataHome = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { Join-Path $HOME '.local/share' }
         $templatesRoot = Join-Path $dataHome 'godot/export_templates'
     } else {
         Stop-GodotCi 'Only Windows and Linux are supported'
     }
+    $monoSuffix = if ($Mono) { '_mono' } else { '' }
     [pscustomobject]@{
-        Tag          = $tag
-        ToolsDir     = $toolsDir
-        Package      = $package
-        Bin          = $bin
-        TemplatesDir = Join-Path $templatesRoot "$Version.$Release.mono"
-        BaseUrl      = "https://github.com/godotengine/godot-builds/releases/download/$tag"
+        Tag           = $tag
+        ToolsDir      = $toolsDir
+        Package       = $package
+        Bin           = $bin
+        TemplatesDir  = Join-Path $templatesRoot ("$Version.$Release" + $(if ($Mono) { '.mono' } else { '' }))
+        TemplatesFile = "Godot_v$tag${monoSuffix}_export_templates.tpz"
+        BaseUrl       = "https://github.com/godotengine/godot-builds/releases/download/$tag"
     }
 }
 
 function Install-GodotTools {
-    param([string]$Version, [string]$Release = 'stable', [switch]$Templates, [string]$DotnetChannel = '8.0')
+    param([string]$Version, [string]$Release = 'stable', [switch]$Templates, [bool]$Mono = $true, [string]$DotnetChannel = '8.0')
 
-    Install-DotnetSdk $DotnetChannel
-    $paths = Get-GodotPaths $Version $Release
+    if ($Mono) { Install-DotnetSdk $DotnetChannel }
+    $paths = Get-GodotPaths $Version $Release $Mono
 
     if (Test-Path -LiteralPath $paths.Bin) {
         Write-CiLog "Godot $($paths.Tag) already installed"
@@ -99,8 +121,8 @@ function Install-GodotTools {
         if (Test-Path -LiteralPath (Join-Path $paths.TemplatesDir 'version.txt')) {
             Write-CiLog "Export templates already installed"
         } else {
-            $tpz = Join-Path (Get-ToolsDir) "Godot_v$($paths.Tag)_mono_export_templates.tpz"
-            Save-Download "$($paths.BaseUrl)/Godot_v$($paths.Tag)_mono_export_templates.tpz" $tpz
+            $tpz = Join-Path (Get-ToolsDir) $paths.TemplatesFile
+            Save-Download "$($paths.BaseUrl)/$($paths.TemplatesFile)" $tpz
             $tmp = Join-Path ([IO.Path]::GetTempPath()) "godot-templates-$([guid]::NewGuid())"
             Expand-Zip $tpz $tmp
             New-Item -ItemType Directory -Force $paths.TemplatesDir | Out-Null
@@ -114,12 +136,16 @@ function Install-GodotTools {
     $env:DOTNET_NOLOGO = '1'
     if ($env:GITHUB_ENV) {
         Add-Content -LiteralPath $env:GITHUB_ENV -Value "GODOT_BIN=$($paths.Bin)"
+        # Marks GODOT_BIN as ours, so a later step for another project picks its own Godot build instead
+        # of treating this one as a Godot the user chose.
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value 'GODOT_CI_INSTALLED=1'
         if ($env:DOTNET_ROOT) {
             Add-Content -LiteralPath $env:GITHUB_ENV -Value "DOTNET_ROOT=$env:DOTNET_ROOT"
             Add-Content -LiteralPath $env:GITHUB_PATH -Value $env:DOTNET_ROOT
         }
     }
-    Write-CiLog "Godot: $(& $paths.Bin --version)  .NET: $(& dotnet --version)"
+    $dotnet = if ($Mono) { "  .NET: $(& dotnet --version)" } else { '' }
+    Write-CiLog "Godot: $(& $paths.Bin --version)$dotnet"
 }
 
 # Installs an addon from a Git tag into <project>/addons. Idempotent.

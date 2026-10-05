@@ -19,9 +19,15 @@ inputs:
   coverage:
     description: Collect coverage into the results artifact and job summary
     default: "false"
+  min-coverage:
+    description: Fail when line coverage is below this percentage (0 = off; implies coverage)
+    default: "0"
   preset:
     description: "export: one preset name (default - every preset)"
     default: ""
+  run-exports:
+    description: "export: also launch the exported build when this runner's OS can run it, and fail on errors"
+    default: "false"
   retention-days:
     description: Days to keep uploaded artifacts
     default: "14"
@@ -29,6 +35,18 @@ outputs:
   presets:
     description: JSON array of the project's export presets
     value: ${{ steps.detect.outputs.presets }}
+  preset-platforms:
+    description: JSON object mapping each preset to its platform
+    value: ${{ steps.detect.outputs.preset-platforms }}
+  name:
+    description: The game's name from project.godot (used in artifact names)
+    value: ${{ steps.detect.outputs.name }}
+  results:
+    description: Folder with test results, summary.json and summary.md
+    value: ${{ steps.run.outputs.results }}
+  results-artifact:
+    description: Name of the uploaded test results artifact
+    value: test-results-${{ steps.run.outputs.artifact }}
 runs:
   using: composite
   steps:
@@ -47,7 +65,9 @@ runs:
           else { Join-Path $HOME '.local/share/godot/export_templates' }
         "templates=$templates" >> $env:GITHUB_OUTPUT
 
-    - uses: actions/setup-dotnet@v6
+    # Only C# projects use the .NET build of Godot; GDScript projects get the standard build.
+    - if: steps.detect.outputs.csharp == 'true'
+      uses: actions/setup-dotnet@v6
       with:
         dotnet-version: 8.0.x
 
@@ -79,7 +99,9 @@ runs:
         RUNNERS: ${{ inputs.runners }}
         FILTER: ${{ inputs.filter }}
         COVERAGE: ${{ inputs.coverage }}
+        MIN_COVERAGE: ${{ inputs.min-coverage }}
         PRESET: ${{ inputs.preset }}
+        RUN_EXPORTS: ${{ inputs.run-exports }}
       run: |
         $results = Join-Path $env:RUNNER_TEMP 'godot-test-results'
         $output = Join-Path $env:RUNNER_TEMP 'godot-build'
@@ -97,6 +119,8 @@ runs:
         if ($env:FILTER) { $params.Filter = $env:FILTER }
         if ($env:COVERAGE -eq 'true') { $params.Coverage = $true }
         if ($env:PRESET) { $params.Preset = $env:PRESET }
+        if ([double]$env:MIN_COVERAGE -gt 0) { $params.MinCoverage = [double]$env:MIN_COVERAGE }
+        if ($env:RUN_EXPORTS -eq 'true') { $params.Run = $true }
         & $env:CLI $env:COMMAND @params
         exit $LASTEXITCODE
 

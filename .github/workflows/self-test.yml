@@ -34,18 +34,27 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  # No inputs at all: detects the shallowest project (examples/gdscript), installs GUT, runs gut + smoke.
+  # No inputs at all: detects the shallowest project (examples/gdscript), installs GUT, runs validate,
+  # gut and smoke.
   zero-config:
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/godot.yml
 
-  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage, then the
-  # Windows export built on Linux.
+  # C# project: every detected runner, a coverage minimum, the Windows export launched on a Windows
+  # runner, and a release dry run (a real release on tags).
   csharp:
+    permissions:
+      contents: write
+      pull-requests: write
     uses: ./.github/workflows/godot.yml
     with:
       project: examples/breakout/game
-      coverage: true
+      min-coverage: 40
       exports: all
+      run-exports: true
+      release: true
       retention-days: 3
 
   # Runners picked by hand.
@@ -54,6 +63,22 @@ jobs:
     with:
       project: examples/breakout/game
       runners: gdunit4,gut
+
+  # init on a bare game (no tests, no CI), then doctor and a full test run of what it generated.
+  init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - shell: pwsh
+        run: |
+          $game = Join-Path $env:RUNNER_TEMP 'bare-game'
+          New-Item -ItemType Directory $game | Out-Null
+          Copy-Item examples/gdscript/project.godot, examples/gdscript/main.gd, examples/gdscript/main.tscn, examples/gdscript/score.gd $game
+          git -C $game init -q
+          ./ci/godot/godot-ci.ps1 init -Project $game
+          ./ci/godot/godot-ci.ps1 doctor -Project $game
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./ci/godot/godot-ci.ps1 test -Project $game -Results (Join-Path $game 'test-results')
 
   # The composite action inside a custom workflow.
   action:
@@ -79,3 +104,9 @@ jobs:
       - name: Filtered run
         shell: pwsh
         run: ./ci/godot/godot-ci.ps1 test -Project examples/breakout/game -Runners dotnet -Filter 'FullyQualifiedName~RunState'
+      - name: Doctor
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 doctor -Project examples/breakout/game
+      - name: Export the Windows build and launch it
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 export -Project examples/breakout/game -Preset Windows -Run

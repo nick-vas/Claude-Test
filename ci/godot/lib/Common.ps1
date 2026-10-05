@@ -45,8 +45,8 @@ $script:KnownNoise = @(
 )
 
 # Godot often exits 0 after printing errors, so builds, exports and smoke runs also scan the log.
-# Returns the offending lines (empty when the log is clean).
-function Get-GodotLogErrors([string]$LogFile) {
+# Returns the offending lines (empty when clean).
+function Select-GodotErrors([string[]]$Lines) {
     $pattern = '^\s*(SCRIPT ERROR|ERROR|USER ERROR):|Unhandled [Ee]xception|Failed to load script'
     $ignore = @($script:KnownNoise)
     if ($env:GODOT_CI_IGNORE_ERRORS) {
@@ -56,18 +56,21 @@ function Get-GodotLogErrors([string]$LogFile) {
     }
     $ignoreRegex = ($ignore | ForEach-Object { "(?:$_)" }) -join '|'
     $errors = @()
-    foreach ($raw in Get-Content -LiteralPath $LogFile) {
+    foreach ($raw in $Lines) {
         $line = $raw -replace "`e\[[0-9;]*m", ''
         if ($line -match $pattern) {
             if ($line -match $ignoreRegex) { Write-CiLog "Ignored known engine noise: $line" }
             else { $errors += $line }
         }
     }
-    return , $errors
+    return $errors
 }
 
+# Always wrap calls in @(...): an empty result comes back as nothing.
+function Get-GodotLogErrors([string]$LogFile) { return Select-GodotErrors @(Get-Content -LiteralPath $LogFile) }
+
 function Assert-GodotLogClean([string]$LogFile, [string]$What) {
-    $errors = Get-GodotLogErrors $LogFile
+    $errors = @(Get-GodotLogErrors $LogFile)
     if ($errors.Count -gt 0) {
         Write-Host '[godot-ci] Godot reported errors:' -ForegroundColor Red
         $errors | Select-Object -First 30 | ForEach-Object { Write-Host "  $_" }
@@ -99,3 +102,19 @@ function ConvertTo-ResPath([string]$ProjectDir, [string]$File) {
 }
 
 function ConvertTo-SafeName([string]$Text) { return ($Text -replace '[^A-Za-z0-9._-]+', '-').Trim('-') }
+
+# Repository root, or $null outside a repository or when Git isn't installed (`& git` would otherwise
+# throw under $ErrorActionPreference = 'Stop').
+function Get-GitRoot([string]$Dir) {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+    $root = & git -C $Dir rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $root) { return $null }
+    return $root
+}
+
+# Godot's release tags drop a .0 patch and write prereleases as rc1, not rc.1: Godot.NET.Sdk 4.6.0 is
+# tag 4.6-stable and 4.7.0-rc.1 is 4.7-rc1.
+function ConvertTo-GodotVersion([string]$Version) {
+    $v = $Version -replace '-(rc|beta|dev|alpha)\.(\d)', '-$1$2'
+    return $v -replace '^(\d+\.\d+)\.0(?=-|$)', '$1'
+}
