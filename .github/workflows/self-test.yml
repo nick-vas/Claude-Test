@@ -1,0 +1,70 @@
+# Exercises the pipeline suite against examples/breakout on every change.
+name: Self-test
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x ci/godot/*.sh
+      - name: Parse action manifests
+        # actionlint covers workflows only; make sure every composite action is valid YAML.
+        run: |
+          for f in .github/actions/*/action.yml; do
+            python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$f"
+            echo "ok $f"
+          done
+      - name: actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  # The full pipeline, tests and exports included.
+  ci:
+    uses: ./.github/workflows/godot-ci.yml
+    with:
+      project-path: examples/breakout/game
+      solution: examples/breakout/Breakout.sln
+      export-presets: '["Linux", "Windows"]'
+      artifact-prefix: breakout
+      retention-days: 3
+      pipelines-repo: ${{ github.repository }}
+      pipelines-ref: ${{ github.sha }}
+
+  # The standalone pieces, called with the same inputs to prove they swap in.
+  build-only:
+    uses: ./.github/workflows/godot-build.yml
+    with:
+      project-path: examples/breakout/game
+      solution: examples/breakout/Breakout.sln
+      pipelines-repo: ${{ github.repository }}
+      pipelines-ref: ${{ github.sha }}
+
+  smoke-only:
+    uses: ./.github/workflows/godot-test.yml
+    with:
+      project-path: examples/breakout/game
+      solution: examples/breakout/Breakout.sln
+      test-runners: '["smoke"]'
+      smoke-frames: 600
+      pipelines-repo: ${{ github.repository }}
+      pipelines-ref: ${{ github.sha }}
+
+  macos:
+    uses: ./.github/workflows/godot-test.yml
+    with:
+      project-path: examples/breakout/game
+      solution: examples/breakout/Breakout.sln
+      runs-on: macos-latest
+      pipelines-repo: ${{ github.repository }}
+      pipelines-ref: ${{ github.sha }}

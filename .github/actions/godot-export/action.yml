@@ -1,0 +1,47 @@
+name: Godot export
+description: Exports one preset and uploads it as an artifact. Run setup-godot (templates true) and godot-build first.
+inputs:
+  preset:
+    description: Preset name from export_presets.cfg
+    required: true
+  project-path:
+    description: Directory containing project.godot
+    default: "."
+  mode:
+    description: release, debug or pack
+    default: release
+  output-path:
+    description: Directory the export is written to (file name comes from the preset's export_path)
+    default: build
+  artifact-name:
+    description: Name of the uploaded artifact (empty to skip uploading)
+    default: ""
+  retention-days:
+    description: Artifact retention
+    default: "14"
+outputs:
+  output-path:
+    description: Directory containing the exported files
+    value: ${{ steps.export.outputs.dir }}
+runs:
+  using: composite
+  steps:
+    - id: export
+      shell: bash
+      env:
+        PRESET: ${{ inputs.preset }}
+        PROJECT: ${{ inputs.project-path }}
+        MODE: ${{ inputs.mode }}
+        OUTPUT: ${{ inputs.output-path }}
+      run: |
+        dir="$OUTPUT/$(printf '%s' "$PRESET" | tr -c 'A-Za-z0-9._-' '-')"
+        "$GITHUB_ACTION_PATH/../../../ci/godot/export.sh" --project "$PROJECT" \
+          --preset "$PRESET" --mode "$MODE" --output-dir "$dir"
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+    - if: inputs.artifact-name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.export.outputs.dir }}
+        retention-days: ${{ inputs.retention-days }}
