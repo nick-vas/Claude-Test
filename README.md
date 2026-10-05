@@ -24,7 +24,8 @@ jobs:
 - the [.NET 8 SDK](https://dotnet.microsoft.com/download) for C# projects
 - Git
 
-The script downloads Godot itself. GitHub's Linux runners already have all of this. Run
+The script downloads Godot itself: the .NET build for C# projects, and the standard build (no .NET needed)
+for GDScript projects. GitHub's Linux runners already have all of this. Run
 `pwsh ci/godot/godot-ci.ps1 doctor` to check a machine and a project.
 
 ## What it detects

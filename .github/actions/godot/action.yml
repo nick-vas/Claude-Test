@@ -65,7 +65,9 @@ runs:
           else { Join-Path $HOME '.local/share/godot/export_templates' }
         "templates=$templates" >> $env:GITHUB_OUTPUT
 
-    - uses: actions/setup-dotnet@v6
+    # Only C# projects use the .NET build of Godot; GDScript projects get the standard build.
+    - if: steps.detect.outputs.csharp == 'true'
+      uses: actions/setup-dotnet@v6
       with:
         dotnet-version: 8.0.x
 

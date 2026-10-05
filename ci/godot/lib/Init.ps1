@@ -17,7 +17,7 @@ function Add-GitignoreEntries([string]$ProjectDir, [string[]]$Entries) {
 }
 
 function New-CiWorkflow([string]$ProjectDir) {
-    $root = (& git -C $ProjectDir rev-parse --show-toplevel 2>$null)
+    $root = Get-GitRoot $ProjectDir
     if (-not $root) { Write-InitStep skipped 'CI workflow: not a git repository'; return }
     $workflows = Join-Path $root '.github/workflows'
     $existing = @(Get-ChildItem -LiteralPath $workflows -File -ErrorAction SilentlyContinue |
@@ -57,8 +57,12 @@ jobs:
 function Add-CSharpTestSetup([string]$ProjectDir, $Info) {
     $csproj = (Get-ChildItem -LiteralPath $ProjectDir -File -Filter '*.csproj' | Select-Object -First 1).FullName
     $content = Get-Content -LiteralPath $csproj -Raw
-    if ($content -match 'gdUnit4\.test\.adapter|Microsoft\.NET\.Test\.Sdk') {
-        Write-InitStep skipped "$(Split-Path $csproj -Leaf) already references test packages"
+    if ($content -match 'gdUnit4\.test\.adapter') {
+        Write-InitStep skipped "$(Split-Path $csproj -Leaf) already references gdUnit4Net"
+    } elseif ($content -match 'Microsoft\.NET\.Test\.Sdk') {
+        # Another framework is set up in the game project; a gdUnit4 starter test would not compile there.
+        Write-InitStep skipped "$(Split-Path $csproj -Leaf) already has its own test setup; no starter test added"
+        return
     } elseif ($Info.GodotVersion -notmatch '^4\.([4-9]|\d{2,})') {
         Write-InitStep skipped "gdUnit4Net needs Godot 4.4 or newer (project uses $($Info.GodotVersion))"
         return

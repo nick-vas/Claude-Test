@@ -61,6 +61,7 @@ if ($Command -eq 'detect') {
     foreach ($detail in (Get-ExportPresetDetails $info.ProjectDir).Values) { $platforms[$detail.Name] = $detail.Platform }
     $values = [ordered]@{
         'project'         = $info.ProjectDir
+        'csharp'          = $info.IsCSharp.ToString().ToLower()
         'name'            = $info.Name
         'solution'        = $info.Solution
         'godot-version'   = $info.GodotVersion
@@ -83,7 +84,7 @@ function Invoke-Setup([switch]$WithTemplates) {
         return
     }
     $version, $release = $info.GodotVersion -split '-', 2
-    Install-GodotTools -Version $version -Release ($release ? $release : 'stable') -Templates:$WithTemplates
+    Install-GodotTools -Version $version -Release ($release ? $release : 'stable') -Templates:$WithTemplates -Mono $info.IsCSharp
     $env:GODOT_CI_INSTALLED = '1'
 }
 
@@ -107,6 +108,18 @@ function Invoke-Build {
     if ($code -ne 0) { Stop-GodotCi "Godot import exited with $code" }
     Assert-GodotLogClean $log 'Import'
     Write-CiLog 'Build OK'
+}
+
+# -Results is wiped before each run, so refuse folders whose loss would hurt: the current folder, the
+# project, anything containing either, or a drive root.
+function Assert-SafeToClear([string]$Dir) {
+    $norm = { param($p) ([System.IO.Path]::GetFullPath($p).TrimEnd('\', '/') -replace '\\', '/') + '/' }
+    $target = & $norm $Dir
+    foreach ($precious in $PWD.Path, $info.ProjectDir) {
+        if ((& $norm $precious).StartsWith($target, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-GodotCi "-Results $Dir would delete $precious; point it at a dedicated folder such as test-results"
+        }
+    }
 }
 
 function Invoke-Tests {
@@ -173,6 +186,8 @@ function Test-ExportedBuild([string]$Name, [string]$Platform, [string]$File) {
 }
 
 Write-CiLog "Project $($info.ProjectDir) | Godot $($info.GodotVersion) | solution $(if ($info.Solution) { $info.Solution } else { 'none' }) | runners $(if ($info.Runners) { $info.Runners -join ',' } else { 'none' })"
+# Before any slow setup: refuse a -Results folder that wiping would hurt.
+if ($Command -eq 'test') { Assert-SafeToClear $Results }
 switch ($Command) {
     'doctor' { Invoke-Doctor $info }
     'init' { Initialize-Project $info }

@@ -53,10 +53,12 @@ function ConvertFrom-ValidateLog([string]$LogFile) {
         $line = $raw -replace "`e\[[0-9;]*m", ''
         if ($line -match '^@@validate begin (?<path>.+)$') {
             $current = $Matches.path; $buffer = @()
-        } elseif ($line -match '^@@validate end (?<path>\S+) (?<status>.+)$') {
+        } elseif ($current -and $line.StartsWith("@@validate end $current ")) {
+            # Matched by the known path rather than a regex: paths may contain spaces.
+            $status = $line.Substring("@@validate end $current ".Length)
             $problems = @(Select-GodotErrors $buffer)
-            if ($Matches.status -ne 'ok') { $problems = @($Matches.status) + $problems }
-            $cases += @{ Name = $Matches.path; Failure = ($problems -join "`n") }
+            if ($status -ne 'ok') { $problems = @($status) + $problems }
+            $cases += @{ Name = $current; Failure = ($problems -join "`n") }
             $current = $null
         } elseif ($current) {
             $buffer += $line

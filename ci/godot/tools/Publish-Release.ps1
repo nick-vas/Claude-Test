@@ -13,8 +13,18 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 3.0
 
+# Linux binaries lose their executable bit in upload-artifact/download-artifact, and Compress-Archive can't
+# set it; find them by their ELF header so they can be fixed and zipped with Unix modes.
+function Test-ElfFile([string]$Path) {
+    $header = [byte[]]::new(4)
+    $stream = [System.IO.File]::OpenRead($Path)
+    try { $read = $stream.Read($header, 0, 4) } finally { $stream.Dispose() }
+    return $read -eq 4 -and $header[0] -eq 0x7F -and $header[1] -eq 0x45 -and $header[2] -eq 0x4C -and $header[3] -eq 0x46
+}
+
 $version = if ($Tag) { $Tag } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
-$out = Join-Path $Dist '_release'
+# Absolute: zip runs from inside each build folder.
+$out = [System.IO.Path]::GetFullPath((Join-Path $Dist '_release'))
 New-Item -ItemType Directory -Force $out | Out-Null
 $zips = @()
 # The workflow downloads every export artifact with merge-multiple, so each preset's build is in
@@ -22,7 +32,15 @@ $zips = @()
 foreach ($dir in Get-ChildItem -LiteralPath $Dist -Directory | Where-Object Name -ne '_release') {
     $preset = $dir.Name
     $zip = Join-Path $out "$Name-$version-$preset.zip"
-    Compress-Archive -Path (Join-Path $dir.FullName '*') -DestinationPath $zip -Force
+    $executables = @(Get-ChildItem -LiteralPath $dir.FullName -Recurse -File | Where-Object { Test-ElfFile $_.FullName })
+    if ($executables -and -not $IsWindows -and (Get-Command zip -ErrorAction SilentlyContinue)) {
+        & chmod +x @($executables.FullName)
+        Push-Location $dir.FullName
+        try { & zip -q -r -X $zip . } finally { Pop-Location }
+        if ($LASTEXITCODE -ne 0) { throw "zip failed for $preset" }
+    } else {
+        Compress-Archive -Path (Join-Path $dir.FullName '*') -DestinationPath $zip -Force
+    }
     Write-Host ("Packed {0} ({1:N1} MB)" -f (Split-Path $zip -Leaf), ((Get-Item $zip).Length / 1MB))
     $zips += $zip
 }

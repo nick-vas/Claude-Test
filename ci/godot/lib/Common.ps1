@@ -102,3 +102,19 @@ function ConvertTo-ResPath([string]$ProjectDir, [string]$File) {
 }
 
 function ConvertTo-SafeName([string]$Text) { return ($Text -replace '[^A-Za-z0-9._-]+', '-').Trim('-') }
+
+# Repository root, or $null outside a repository or when Git isn't installed (`& git` would otherwise
+# throw under $ErrorActionPreference = 'Stop').
+function Get-GitRoot([string]$Dir) {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return $null }
+    $root = & git -C $Dir rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $root) { return $null }
+    return $root
+}
+
+# Godot's release tags drop a .0 patch and write prereleases as rc1, not rc.1: Godot.NET.Sdk 4.6.0 is
+# tag 4.6-stable and 4.7.0-rc.1 is 4.7-rc1.
+function ConvertTo-GodotVersion([string]$Version) {
+    $v = $Version -replace '-(rc|beta|dev|alpha)\.(\d)', '-$1$2'
+    return $v -replace '^(\d+\.\d+)\.0(?=-|$)', '$1'
+}

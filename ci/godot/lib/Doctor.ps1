@@ -3,7 +3,7 @@
 
 # .gitignore files that apply to the project: its own and those above it, up to the repository root.
 function Get-GitignoreFiles([string]$ProjectDir) {
-    $root = (& git -C $ProjectDir rev-parse --show-toplevel 2>$null)
+    $root = Get-GitRoot $ProjectDir
     $dir = Get-Item -LiteralPath $ProjectDir
     while ($dir) {
         $file = Join-Path $dir.FullName '.gitignore'
@@ -33,7 +33,7 @@ function Invoke-Doctor($Info) {
         else { Add-Check FAIL '.NET 8 SDK not found (needed for C# projects)' 'winget install Microsoft.DotNet.SDK.8' }
     }
     $version, $release = $Info.GodotVersion -split '-', 2
-    $paths = Get-GodotPaths $version ($release ? $release : 'stable')
+    $paths = Get-GodotPaths $version ($release ? $release : 'stable') $isCSharp
     if (Test-Path -LiteralPath $paths.Bin) { Add-Check OK "Godot $($Info.GodotVersion) installed in $(Get-ToolsDir)" }
     else { Add-Check INFO "Godot $($Info.GodotVersion) will be downloaded on the first run (about 100 MB)" }
     if ($Info.Presets.Count -gt 0 -and -not (Test-Path -LiteralPath (Join-Path $paths.TemplatesDir 'version.txt'))) {
@@ -73,7 +73,8 @@ function Invoke-Doctor($Info) {
     if ($gameCsproj -match 'gdUnit4\.test\.adapter' -and $ignored -notmatch 'gdunit4_testadapter') {
         Add-Check WARN 'gdUnit4Net generates gdunit4_testadapter_v5/ in the project, and .gitignore does not exclude it' 'Add gdunit4_testadapter*/ to .gitignore (or run init)'
     }
-    $testsWithoutCoverage = @(Find-ProjectFiles -Root (Split-Path ($Info.Solution ? $Info.Solution : $project)) -Filter '*.csproj' |
+    $searchRoot = if ($Info.Solution) { Split-Path $Info.Solution } else { $project }
+    $testsWithoutCoverage = @(Find-ProjectFiles -Root $searchRoot -Filter '*.csproj' |
         Where-Object { $c = Get-Content -LiteralPath $_.FullName -Raw; $c -match 'Microsoft\.NET\.Test\.Sdk' -and $c -notmatch 'coverlet\.collector' })
     if ($testsWithoutCoverage.Count -gt 0) {
         Add-Check INFO "No coverage for $($testsWithoutCoverage.Name -join ', ') (-Coverage needs coverlet.collector)" 'dotnet add package coverlet.collector'
