@@ -9,6 +9,23 @@ die() { echo "[godot-ci] ERROR: $*" >&2; exit 1; }
 group() { if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::group::$*"; else echo "== $* =="; fi; }
 endgroup() { if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::endgroup::"; fi; }
 
+# Paths written into files or embedded in option values (runsettings, -reports:..., --targetargs) are not
+# converted by Git Bash, so pass Windows programs a native path. Forward slashes ("mixed") work everywhere.
+native_path() {
+  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s\n' "$1"; fi
+}
+
+# python3 on Linux; on Windows "python3" can be the Microsoft Store stub, so check it really runs.
+find_python() {
+  local candidate
+  for candidate in python3 python py; do
+    if "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1; then
+      echo "$candidate"; return
+    fi
+  done
+  die "Python 3.8+ is required (https://www.python.org/downloads/)"
+}
+
 # Resolve GODOT_BIN from the environment, from install.sh's env file, or from PATH.
 resolve_godot() {
   if [[ -z "${GODOT_BIN:-}" ]]; then
@@ -36,7 +53,7 @@ resolve_dotnet_target() {
 # Engine-internal messages that say nothing about the project. Each entry is a regex; extend the list
 # per project with GODOT_CI_IGNORE_ERRORS (a regex, e.g. 'some message|another message').
 GODOT_CI_KNOWN_NOISE=(
-  # macOS: the Android export plugin reads editor settings during headless shutdown (timing-dependent).
+  # The Android export plugin can read editor settings during headless shutdown (timing-dependent).
   'EditorSettings not instantiated yet when getting setting'
 )
 

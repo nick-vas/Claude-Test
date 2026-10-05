@@ -46,6 +46,7 @@ find "$results" \( -name '*.trx' -o -name '*.junit.xml' -o -name '*.log' -o -nam
 rm -rf "$results/coverage"
 project="$(cd "$project" && pwd)"
 resolve_godot
+PYTHON="$(find_python)"
 tools_dir="${GODOT_TOOLS_DIR:-$HOME/.godot-ci}/tools"
 
 # Installs a .NET global tool into the shared tools dir once.
@@ -70,7 +71,7 @@ run_godot() {
 # Single-case JUnit file for runners without native reports.
 write_junit() {
   local name="$1" status="$2" message="$3" file="$results/$1.junit.xml"
-  python3 - "$name" "$status" "$message" "$file" <<'PY'
+  "$PYTHON" - "$name" "$status" "$message" "$file" <<'PY'
 import sys
 from xml.sax.saxutils import escape, quoteattr
 name, status, message, path = sys.argv[1:]
@@ -94,7 +95,7 @@ write_runsettings() {
     <MaxCpuCount>1</MaxCpuCount>
     <TestSessionTimeout>1800000</TestSessionTimeout>
     <EnvironmentVariables>
-      <GODOT_BIN>$GODOT_BIN</GODOT_BIN>
+      <GODOT_BIN>$(native_path "$GODOT_BIN")</GODOT_BIN>
     </EnvironmentVariables>
   </RunConfiguration>
   <GdUnit4>
@@ -104,7 +105,7 @@ write_runsettings() {
   </GdUnit4>
 </RunSettings>
 XML
-  echo "$results/godot.runsettings"
+  native_path "$results/godot.runsettings"
 }
 
 dotnet_test() {
@@ -151,8 +152,12 @@ run_godottest() {
     [[ -d "$bin_dir" ]] || die "godottest runner: no Debug build in $bin_dir; build the project first"
     mkdir -p "$results/coverage"
     set +e
-    "$coverlet" "$bin_dir" --target "$GODOT_BIN" --targetargs "${args[*]} --coverage" \
-      --format cobertura --output "$results/coverage/godottest.cobertura.xml" \
+    # coverlet passes --targetargs on as one string, so its paths must already be native.
+    # Quoted for project paths with spaces (e.g. under C:/Users/First Last).
+    local target_args
+    target_args="--headless --path \"$(native_path "$project")\" ${scene:+$scene }--run-tests${filter:+=$filter} --quit-on-finish --coverage"
+    "$coverlet" "$(native_path "$bin_dir")" --target "$(native_path "$GODOT_BIN")" --targetargs "$target_args" \
+      --format cobertura --output "$(native_path "$results/coverage/godottest.cobertura.xml")" \
       --exclude-by-file "**/test/**/*.cs" --exclude-assemblies-without-sources MissingAll 2>&1 | tee "$logfile"
     status=${PIPESTATUS[0]}
     set -e
@@ -160,7 +165,7 @@ run_godottest() {
     run_godot "$logfile" "${args[@]}" || status=$?
   fi
   endgroup
-  python3 "$here/report.py" godottest-junit "$logfile" "$results/godottest.junit.xml"
+  "$PYTHON" "$here/report.py" godottest-junit "$logfile" "$results/godottest.junit.xml"
   return "$status"
 }
 
@@ -168,7 +173,7 @@ run_gut() {
   [[ -f "$project/addons/gut/gut_cmdln.gd" ]] || die "gut runner: addons/gut missing. Set the workflow input 'addons: gut@v9.6.1' or run ci/godot/addons.sh --project '$project' gut@v9.6.1"
   local logfile="$results/gut.log"
   local args=(--headless --path "$project" -s addons/gut/gut_cmdln.gd -gexit -gdisable_colors
-              "-gjunit_xml_file=$results/gut.junit.xml")
+              "-gjunit_xml_file=$(native_path "$results/gut.junit.xml")")
   # Without a .gutconfig.json, search every folder that holds a script extending GutTest.
   if [[ ! -f "$project/.gutconfig.json" ]]; then
     local dir
@@ -220,7 +225,8 @@ if $coverage; then
   done
   if compgen -G "$results/coverage/*.cobertura.xml" >/dev/null; then
     reportgenerator="$(dotnet_tool dotnet-reportgenerator-globaltool reportgenerator)"
-    "$reportgenerator" "-reports:$results/coverage/*.cobertura.xml" "-targetdir:$results/coverage/report" \
+    "$reportgenerator" "-reports:$(native_path "$results/coverage")/*.cobertura.xml" \
+      "-targetdir:$(native_path "$results/coverage/report")" \
       "-reporttypes:Html;MarkdownSummaryGithub;Cobertura" "-title:$runner coverage" >/dev/null
   else
     log "No coverage data was produced by the $runner runner"
@@ -228,6 +234,6 @@ if $coverage; then
 fi
 
 # report.py also fails the run when no tests were reported, so a misconfigured runner can't pass silently.
-python3 "$here/report.py" summary "$results" --runner "$runner" --exit-code "$status" || status=1
+"$PYTHON" "$here/report.py" summary "$results" --runner "$runner" --exit-code "$status" || status=1
 [[ $status -eq 0 ]] || die "$runner tests failed"
 log "$runner tests passed"

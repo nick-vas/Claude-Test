@@ -32,13 +32,13 @@ on:
         type: boolean
         default: false
       exports:
-        description: 'Presets to export after tests pass: "all", a comma list like "Linux,Windows", or empty for none'
+        description: 'Presets to export after tests pass: "all", a comma list of preset names, or empty for none'
         type: string
         default: ""
       runs-on:
-        description: Runner label (Linux or macOS)
+        description: Runner label (a Windows runner)
         type: string
-        default: ubuntu-latest
+        default: windows-latest
       lfs:
         description: Check out Git LFS files
         type: boolean

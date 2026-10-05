@@ -1,4 +1,4 @@
-# Exercises the pipeline against the examples on every change, through every entry point.
+# Exercises the pipeline against the examples on Windows, through every entry point.
 name: Self-test
 
 on:
@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 jobs:
+  # Static checks only (no Godot), so they run on the cheaper Linux runner.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -33,7 +34,8 @@ jobs:
   zero-config:
     uses: ./.github/workflows/godot.yml
 
-  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage and exports.
+  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage and the
+  # Windows export.
   csharp:
     uses: ./.github/workflows/godot.yml
     with:
@@ -42,25 +44,33 @@ jobs:
       exports: all
       retention-days: 3
 
-  # Explicit runners on macOS.
-  macos:
+  # Runners picked by hand.
+  explicit-runners:
     uses: ./.github/workflows/godot.yml
     with:
       project: examples/breakout/game
       runners: gdunit4,gut
-      runs-on: macos-latest
 
-  # The CLI on a bare runner, exactly as on a developer machine or in a Claude cloud session.
+  # The CLI on a bare Windows runner, from Git Bash, cmd and PowerShell, as on a developer machine.
   cli:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - run: ci/godot/godot-ci test --project examples/gdscript
-      - run: ci/godot/godot-ci test --project examples/breakout/game --runners dotnet --filter "FullyQualifiedName~RunState"
+      - name: Git Bash
+        shell: bash
+        run: ci/godot/godot-ci test --project examples/gdscript
+      - name: cmd
+        shell: cmd
+        run: ci\godot\godot-ci.cmd test --project examples/breakout/game --runners dotnet --filter "FullyQualifiedName~RunState"
+      - name: PowerShell
+        shell: pwsh
+        run: |
+          .\ci\godot\godot-ci.cmd detect --project examples/breakout/game
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # The composite action inside a custom workflow.
   action:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/godot

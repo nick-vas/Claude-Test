@@ -24,11 +24,13 @@ done
 [[ -n "$output" || -n "$output_dir" ]] || die "export.sh: --output or --output-dir is required"
 presets="$project/export_presets.cfg"
 [[ -f "$presets" ]] || die "No export_presets.cfg in '$project'"
-grep -q "^name=\"$preset\"$" "$presets" || die "Preset '$preset' not found in export_presets.cfg"
+# tr: Windows checkouts often have CRLF line endings.
+tr -d '\r' < "$presets" | grep -q "^name=\"$preset\"$" || die "Preset '$preset' not found in export_presets.cfg"
 
 if [[ -z "$output" ]]; then
   # export_path of the matching [preset.N] section, e.g. "../build/windows/Game.exe" -> Game.exe
   export_path="$(awk -v name="name=\"$preset\"" '
+    { sub(/\r$/, "") }
     /^\[preset\.[0-9]+\]$/ { in_preset = 0 }
     $0 == name { in_preset = 1 }
     in_preset && /^export_path=/ { sub(/^export_path="/, ""); sub(/"$/, ""); print; exit }

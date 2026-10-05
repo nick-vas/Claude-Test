@@ -1,0 +1,6 @@
+# Scripts must keep LF line endings: Windows checkouts (core.autocrlf) would otherwise break bash.
+*.sh text eol=lf
+*.py text eol=lf
+ci/godot/godot-ci text eol=lf
+# cmd needs CRLF.
+*.cmd text eol=crlf
