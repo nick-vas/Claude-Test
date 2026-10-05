@@ -5,7 +5,7 @@ inputs:
     description: Directory containing project.godot
     default: "."
   solution:
-    description: .sln/.csproj to build (default: first one found in project-path)
+    description: ".sln/.csproj to build (default: first one found in project-path)"
     default: ""
   configuration:
     description: Debug or Release

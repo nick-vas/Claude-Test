@@ -8,13 +8,13 @@ inputs:
     description: Directory containing project.godot
     default: "."
   solution:
-    description: .sln/.csproj that dotnet test runs (default: first one found in project-path)
+    description: ".sln/.csproj that dotnet test runs (default: first one found in project-path)"
     default: ""
   filter:
     description: dotnet test --filter expression
     default: ""
   scene:
-    description: Scene the smoke runner boots (default: the main scene)
+    description: "Scene the smoke runner boots (default: the main scene)"
     default: ""
   frames:
     description: Frames the smoke runner plays before quitting
