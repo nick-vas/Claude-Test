@@ -1,0 +1,128 @@
+# Reusable workflow - part of the interchangeable Godot .NET pipeline suite.
+# Every workflow in the suite accepts the same core inputs, so callers can swap
+# godot-build / godot-test / godot-export / godot-ci without renaming anything.
+# Inputs a workflow does not use are accepted and ignored.
+# See docs/godot-pipelines.md.
+name: Godot test
+
+on:
+  workflow_call:
+    inputs:
+      project-path:
+        description: Directory containing project.godot
+        type: string
+        default: "."
+      solution:
+        description: .sln/.csproj to build and test (default - first one found in project-path)
+        type: string
+        default: ""
+      godot-version:
+        type: string
+        default: "4.6.1"
+      godot-release:
+        description: stable, rc1, beta2, ...
+        type: string
+        default: stable
+      dotnet-version:
+        type: string
+        default: "8.0"
+      runs-on:
+        description: Runner label (Linux or macOS)
+        type: string
+        default: ubuntu-latest
+      lfs:
+        description: Check out Git LFS files
+        type: boolean
+        default: false
+      submodules:
+        description: "Check out submodules: false, true or recursive"
+        type: string
+        default: "false"
+      pipelines-repo:
+        description: Repository holding these pipelines (override when using a fork)
+        type: string
+        default: nick-vas/Claude-Test
+      pipelines-ref:
+        description: Ref of pipelines-repo whose scripts and actions run. Keep it equal to the @ref you call this workflow with.
+        type: string
+        default: main
+      test-runners:
+        description: 'JSON array of runners, each in its own job: "dotnet", "smoke". [] skips tests.'
+        type: string
+        default: '["dotnet", "smoke"]'
+      test-filter:
+        description: dotnet test --filter expression
+        type: string
+        default: ""
+      smoke-scene:
+        description: Scene the smoke runner boots (default - main scene)
+        type: string
+        default: ""
+      smoke-frames:
+        type: number
+        default: 120
+      export-presets:
+        description: 'JSON array of export_presets.cfg preset names, each in its own job, e.g. ["Linux", "Windows"]. [] skips exports.'
+        type: string
+        default: "[]"
+      export-mode:
+        description: release, debug or pack
+        type: string
+        default: release
+      artifact-prefix:
+        description: Export artifacts are named <prefix>-<preset>
+        type: string
+        default: ${{ github.event.repository.name }}
+      retention-days:
+        type: number
+        default: 14
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.runner }})
+    if: inputs.test-runners != '[]'
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(inputs.test-runners) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: ${{ inputs.lfs }}
+          submodules: ${{ inputs.submodules }}
+
+      - name: Fetch pipeline scripts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.pipelines-repo }}
+          ref: ${{ inputs.pipelines-ref }}
+          path: .godot-pipelines
+
+      # Keep Godot from importing the pipeline repo's example project.
+      - run: touch .godot-pipelines/.gdignore
+
+      - uses: ./.godot-pipelines/.github/actions/setup-godot
+        with:
+          godot-version: ${{ inputs.godot-version }}
+          godot-release: ${{ inputs.godot-release }}
+          dotnet-version: ${{ inputs.dotnet-version }}
+          templates: false
+
+      - uses: ./.godot-pipelines/.github/actions/godot-build
+        with:
+          project-path: ${{ inputs.project-path }}
+          solution: ${{ inputs.solution }}
+
+      - uses: ./.godot-pipelines/.github/actions/godot-test
+        with:
+          runner: ${{ matrix.runner }}
+          project-path: ${{ inputs.project-path }}
+          solution: ${{ inputs.solution }}
+          filter: ${{ inputs.test-filter }}
+          scene: ${{ inputs.smoke-scene }}
+          frames: ${{ inputs.smoke-frames }}
+          artifact-name: test-results-${{ matrix.runner }}

@@ -1,0 +1,52 @@
+name: Godot test
+description: Runs one test runner (dotnet or smoke) and uploads its results. Run setup-godot and godot-build first.
+inputs:
+  runner:
+    description: "dotnet (xUnit/NUnit/MSTest/GdUnit4Net via dotnet test) or smoke (boot the game headless and fail on errors)"
+    required: true
+  project-path:
+    description: Directory containing project.godot
+    default: "."
+  solution:
+    description: .sln/.csproj that dotnet test runs (default: first one found in project-path)
+    default: ""
+  filter:
+    description: dotnet test --filter expression
+    default: ""
+  scene:
+    description: Scene the smoke runner boots (default: the main scene)
+    default: ""
+  frames:
+    description: Frames the smoke runner plays before quitting
+    default: "120"
+  results-path:
+    description: Where results are written
+    default: test-results
+  artifact-name:
+    description: Name of the uploaded results artifact (empty to skip uploading)
+    default: test-results-${{ github.job }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        RUNNER_KIND: ${{ inputs.runner }}
+        PROJECT: ${{ inputs.project-path }}
+        SOLUTION: ${{ inputs.solution }}
+        FILTER: ${{ inputs.filter }}
+        SCENE: ${{ inputs.scene }}
+        FRAMES: ${{ inputs.frames }}
+        RESULTS: ${{ inputs.results-path }}
+      run: |
+        args=(--runner "$RUNNER_KIND" --project "$PROJECT" --results "$RESULTS" --frames "$FRAMES")
+        [[ -n "$SOLUTION" ]] && args+=(--solution "$SOLUTION")
+        [[ -n "$FILTER" ]] && args+=(--filter "$FILTER")
+        [[ -n "$SCENE" ]] && args+=(--scene "$SCENE")
+        "$GITHUB_ACTION_PATH/../../../ci/godot/test.sh" "${args[@]}"
+
+    - if: always() && inputs.artifact-name != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.results-path }}
+        if-no-files-found: ignore

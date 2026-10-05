@@ -1,0 +1,29 @@
+name: Godot build
+description: Compiles the C# solution and imports the Godot project headlessly. Run setup-godot first.
+inputs:
+  project-path:
+    description: Directory containing project.godot
+    default: "."
+  solution:
+    description: .sln/.csproj to build (default: first one found in project-path)
+    default: ""
+  configuration:
+    description: Debug or Release
+    default: Debug
+  allow-import-errors:
+    description: Don't fail on errors Godot prints during import
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PROJECT: ${{ inputs.project-path }}
+        SOLUTION: ${{ inputs.solution }}
+        CONFIGURATION: ${{ inputs.configuration }}
+        ALLOW_ERRORS: ${{ inputs.allow-import-errors }}
+      run: |
+        args=(--project "$PROJECT" --configuration "$CONFIGURATION")
+        [[ -n "$SOLUTION" ]] && args+=(--solution "$SOLUTION")
+        [[ "$ALLOW_ERRORS" == "true" ]] && args+=(--allow-errors)
+        "$GITHUB_ACTION_PATH/../../../ci/godot/build.sh" "${args[@]}"
