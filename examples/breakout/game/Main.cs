@@ -19,6 +19,12 @@ public partial class Main : Node2D
     private Vector2 _ballDir;
     private float _paddleX;
 
+    // Read by the scene tests in test/.
+    public RunState Run => _run;
+    public int BricksRemaining => _bricks.Count;
+    public int Score => _run.Score;
+    public int Floor => _run.Floor;
+
     private float PaddleWidth => PaddleBaseWidth + _run.PaddleWidthBonus;
     private Rect2 PaddleRect => new(_paddleX - PaddleWidth / 2, Arena.Y - 32, PaddleWidth, 12);
 

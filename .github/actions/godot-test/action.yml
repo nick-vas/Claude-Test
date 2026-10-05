@@ -2,7 +2,7 @@ name: Godot test
 description: Runs one test runner (dotnet or smoke) and uploads its results. Run setup-godot and godot-build first.
 inputs:
   runner:
-    description: "dotnet (xUnit/NUnit/MSTest/GdUnit4Net via dotnet test) or smoke (boot the game headless and fail on errors)"
+    description: "dotnet (dotnet test on the solution), gdunit4 (gdUnit4Net), godottest (Chickensoft GoDotTest), gut (GUT) or smoke"
     required: true
   project-path:
     description: Directory containing project.godot
@@ -14,11 +14,14 @@ inputs:
     description: dotnet test --filter expression
     default: ""
   scene:
-    description: "Scene the smoke runner boots (default: the main scene)"
+    description: "Scene the smoke or godottest runner boots (default: the main scene)"
     default: ""
   frames:
     description: Frames the smoke runner plays before quitting
     default: "120"
+  coverage:
+    description: Collect Cobertura coverage and add a summary (dotnet, gdunit4, godottest)
+    default: "false"
   results-path:
     description: Where results are written
     default: test-results
@@ -37,15 +40,17 @@ runs:
         SCENE: ${{ inputs.scene }}
         FRAMES: ${{ inputs.frames }}
         RESULTS: ${{ inputs.results-path }}
+        COVERAGE: ${{ inputs.coverage }}
       run: |
         args=(--runner "$RUNNER_KIND" --project "$PROJECT" --results "$RESULTS" --frames "$FRAMES")
         [[ -n "$SOLUTION" ]] && args+=(--solution "$SOLUTION")
         [[ -n "$FILTER" ]] && args+=(--filter "$FILTER")
         [[ -n "$SCENE" ]] && args+=(--scene "$SCENE")
+        [[ "$COVERAGE" == "true" ]] && args+=(--coverage)
         "$GITHUB_ACTION_PATH/../../../ci/godot/test.sh" "${args[@]}"
 
     - if: always() && inputs.artifact-name != ''
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.artifact-name }}
         path: ${{ inputs.results-path }}

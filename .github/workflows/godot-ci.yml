@@ -39,6 +39,10 @@ on:
         description: "Check out submodules: false, true or recursive"
         type: string
         default: "false"
+      addons:
+        description: "Space-separated addons installed before building, e.g. gut@v9.6.1"
+        type: string
+        default: ""
       pipelines-repo:
         description: Repository holding these pipelines (override when using a fork)
         type: string
@@ -48,7 +52,7 @@ on:
         type: string
         default: main
       test-runners:
-        description: 'JSON array of runners, each in its own job: "dotnet", "smoke". [] skips tests.'
+        description: 'JSON array of runners, each in its own job: "dotnet", "gdunit4", "godottest", "gut", "smoke". [] skips tests.'
         type: string
         default: '["dotnet", "smoke"]'
       test-filter:
@@ -62,6 +66,14 @@ on:
       smoke-frames:
         type: number
         default: 120
+      coverage:
+        description: Collect coverage (dotnet, gdunit4, godottest) into the results artifact and job summary
+        type: boolean
+        default: false
+      godottest-scene:
+        description: Scene that starts GoDotTest (default - main scene)
+        type: string
+        default: ""
       export-presets:
         description: 'JSON array of export_presets.cfg preset names, each in its own job, e.g. ["Linux", "Windows"]. [] skips exports.'
         type: string
@@ -86,13 +98,13 @@ jobs:
     name: Build
     runs-on: ${{ inputs.runs-on }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: ${{ inputs.lfs }}
           submodules: ${{ inputs.submodules }}
 
       - name: Fetch pipeline scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.pipelines-repo }}
           ref: ${{ inputs.pipelines-ref }}
@@ -112,6 +124,7 @@ jobs:
         with:
           project-path: ${{ inputs.project-path }}
           solution: ${{ inputs.solution }}
+          addons: ${{ inputs.addons }}
 
   test:
     name: Test (${{ matrix.runner }})
@@ -123,13 +136,13 @@ jobs:
       matrix:
         runner: ${{ fromJSON(inputs.test-runners) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: ${{ inputs.lfs }}
           submodules: ${{ inputs.submodules }}
 
       - name: Fetch pipeline scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.pipelines-repo }}
           ref: ${{ inputs.pipelines-ref }}
@@ -149,6 +162,7 @@ jobs:
         with:
           project-path: ${{ inputs.project-path }}
           solution: ${{ inputs.solution }}
+          addons: ${{ inputs.addons }}
 
       - uses: ./.godot-pipelines/.github/actions/godot-test
         with:
@@ -156,8 +170,10 @@ jobs:
           project-path: ${{ inputs.project-path }}
           solution: ${{ inputs.solution }}
           filter: ${{ inputs.test-filter }}
-          scene: ${{ inputs.smoke-scene }}
+          # Spelled out so an empty godottest-scene stays empty instead of falling through to smoke-scene.
+          scene: ${{ matrix.runner == 'godottest' && inputs.godottest-scene || matrix.runner != 'godottest' && inputs.smoke-scene || '' }}
           frames: ${{ inputs.smoke-frames }}
+          coverage: ${{ inputs.coverage }}
           artifact-name: test-results-${{ matrix.runner }}
 
   export:
@@ -174,13 +190,13 @@ jobs:
       matrix:
         preset: ${{ fromJSON(inputs.export-presets) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           lfs: ${{ inputs.lfs }}
           submodules: ${{ inputs.submodules }}
 
       - name: Fetch pipeline scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.pipelines-repo }}
           ref: ${{ inputs.pipelines-ref }}
@@ -200,6 +216,7 @@ jobs:
         with:
           project-path: ${{ inputs.project-path }}
           solution: ${{ inputs.solution }}
+          addons: ${{ inputs.addons }}
 
       - uses: ./.godot-pipelines/.github/actions/godot-export
         with:

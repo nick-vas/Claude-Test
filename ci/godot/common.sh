@@ -33,16 +33,35 @@ resolve_dotnet_target() {
   echo "$found"
 }
 
+# Engine-internal messages that say nothing about the project. Each entry is a regex; extend the list
+# per project with GODOT_CI_IGNORE_ERRORS (a regex, e.g. 'some message|another message').
+GODOT_CI_KNOWN_NOISE=(
+  # macOS: the Android export plugin reads editor settings during headless shutdown (timing-dependent).
+  'EditorSettings not instantiated yet when getting setting'
+)
+
 # Godot occasionally exits 0 after printing errors, so scan its log too.
 check_godot_log() {
   local logfile="$1" pattern='^ *(SCRIPT ERROR|ERROR|USER ERROR):|Unhandled [Ee]xception|Failed to load script'
+  local ignore
+  ignore="$(IFS='|'; echo "${GODOT_CI_KNOWN_NOISE[*]}")${GODOT_CI_IGNORE_ERRORS:+|$GODOT_CI_IGNORE_ERRORS}"
   # Strip ANSI colour codes before matching (no sed -i: BSD and GNU disagree on it).
   local plain
   plain="$(mktemp)"
   sed $'s/\x1b\\[[0-9;]*m//g' "$logfile" > "$plain" && mv "$plain" "$logfile"
-  if grep -Eq "$pattern" "$logfile"; then
+  # grep exits 2 on a bad regex, which would otherwise read as "no errors".
+  local rc=0
+  grep -E "$ignore" /dev/null || rc=$?
+  [[ $rc -le 1 ]] || die "GODOT_CI_IGNORE_ERRORS is not a valid extended regex: $GODOT_CI_IGNORE_ERRORS"
+  # Read every line rather than stopping at the first match: an early exit (-q) SIGPIPEs the upstream
+  # grep, and under pipefail that turns a log full of errors into a pass.
+  local errors noise
+  errors="$(grep -E "$pattern" "$logfile" | grep -Ev "$ignore" || true)"
+  if [[ -n "$errors" ]]; then
     echo "[godot-ci] Godot reported errors:" >&2
-    grep -E -A3 "$pattern" "$logfile" | head -n 60 >&2
+    grep -E -A3 "$pattern" "$logfile" | grep -Ev "$ignore" | head -n 60 >&2 || true
     return 1
   fi
+  noise="$(grep -E "$pattern" "$logfile" | grep -E "$ignore" || true)"
+  [[ -z "$noise" ]] || log "Ignored known engine noise: ${noise%%$'\n'*}"
 }
