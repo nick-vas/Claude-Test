@@ -3,7 +3,7 @@
 #
 #   jobs:
 #     godot:
-#       uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+#       uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 #
 # See README.md for usage scenarios.
 name: Godot
@@ -75,7 +75,7 @@ jobs:
       # match the workflow version without any extra input.
       - uses: actions/checkout@v7
         with:
-          repository: ${{ job.workflow_repository || 'nick-vas/Claude-Test' }}
+          repository: ${{ job.workflow_repository || 'nick-vas/Godot_TestSuite' }}
           ref: ${{ job.workflow_sha || 'main' }}
           path: .godot-pipelines
 
@@ -131,7 +131,7 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          repository: ${{ job.workflow_repository || 'nick-vas/Claude-Test' }}
+          repository: ${{ job.workflow_repository || 'nick-vas/Godot_TestSuite' }}
           ref: ${{ job.workflow_sha || 'main' }}
           path: .godot-pipelines
 

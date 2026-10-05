@@ -21,6 +21,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -f "$project/project.godot" ]] || die "No project.godot in '$project'"
 
+[[ ${#specs[@]} -gt 0 ]] || die "addons.sh: name at least one addon, e.g. gut@v9.6.1"
 for spec in "${specs[@]}"; do
   name="${spec%%@*}"; ref="${spec#*@}"
   [[ "$name" != "$spec" && -n "$ref" ]] || die "Addon '$spec' needs a version, e.g. gut@v9.6.1"

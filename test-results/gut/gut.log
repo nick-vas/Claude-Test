@@ -1,0 +1,34 @@
+Godot Engine v4.6.1.stable.mono.official.14d19694e - https://godotengine.org
+
+---  GUT  ---
+[1m[INFO]:  [0musing [/root/.local/share/godot/app_userdata/GDScript Example] for temporary output.
+Godot version:  4.6.1
+GUT version:  9.6.1
+
+
+res:///test/test_score.gd
+* test_every_fifth_hit_raises_the_multiplier
+* test_miss_resets_combo
+* test_main_scene_scores_on_ready
+Score after 12 hits: 230
+3/3 passed.
+
+
+
+
+==============================================
+= Run Summary
+==============================================
+
+Totals
+------
+Scripts               1
+Tests                 3
+Passing Tests         3
+Asserts               3
+Time              0.428s
+
+
+---- All tests passed! ----
+
+Results saved to /home/user/Claude-Test/test-results/gut/gut.junit.xml

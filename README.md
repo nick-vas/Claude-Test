@@ -1,4 +1,4 @@
-# Godot CI
+# Godot Test Suite
 
 Build, test and export **Godot 4** projects (GDScript or C#) with one command locally, or with a
 three-line GitHub workflow. It detects your project, Godot version and test frameworks for you.
@@ -8,7 +8,7 @@ three-line GitHub workflow. It detects your project, Godot version and test fram
 on: [push, pull_request]
 jobs:
   godot:
-    uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+    uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 ```
 
 ```bash
@@ -40,7 +40,7 @@ even when Godot exits 0.
 on: [push, pull_request]
 jobs:
   godot:
-    uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+    uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 ```
 The Godot version comes from your csproj, the test frameworks from your packages and scripts. Nothing to
 keep in sync when you upgrade Godot: bump `Godot.NET.Sdk` and CI follows.
@@ -62,7 +62,7 @@ To use it from another repo without copying the scripts, add this repository as 
 the `ci/godot` folder. In a Claude Code cloud environment, add this to the setup script so Godot is ready
 when a session starts:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nick-vas/Claude-Test/main/ci/godot/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nick-vas/Godot_TestSuite/main/ci/godot/install.sh | bash
 ```
 On Windows, use WSL, or run your framework directly (`dotnet test`, or the GUT panel in the editor).
 
@@ -75,7 +75,7 @@ on:
     branches: [main]
 jobs:
   godot:
-    uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+    uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
     with:
       # Unit tests only on PRs; every framework once merged.
       runners: ${{ github.event_name == 'pull_request' && 'dotnet' || '' }}
@@ -89,7 +89,7 @@ on:
     tags: ['v*']
 jobs:
   release:
-    uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+    uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
     with:
       exports: all            # or "Linux,Windows"
       retention-days: 30
@@ -125,7 +125,7 @@ jobs:
     strategy:
       matrix:
         project: [games/arena, games/puzzle]
-    uses: nick-vas/Claude-Test/.github/workflows/godot.yml@main
+    uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
     with:
       project: ${{ matrix.project }}
 ```
@@ -148,7 +148,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: nick-vas/Claude-Test/.github/actions/godot@main
+      - uses: nick-vas/Godot_TestSuite/.github/actions/godot@main
         with:
           command: export        # test, build or export
           preset: Linux

@@ -51,6 +51,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Arrays that may be empty are expanded as ${a[@]+"${a[@]}"}: macOS ships bash 3.2, where "${a[@]}" on an
+# empty array is an unbound-variable error under set -u.
+
 # Folders that never hold the user's own project files.
 prune=(-path '*/.git' -o -path '*/.godot' -o -path '*/addons' -o -path '*/bin' -o -path '*/obj'
        -o -path '*/node_modules' -o -path '*/.godot-pipelines' -o -path '*/gdunit4_testadapter*')
@@ -148,7 +151,7 @@ name="$(sed -n 's/^config\/name="\(.*\)"$/\1/p' "$project/project.godot" | head 
 name="$(printf '%s' "${name:-$(basename "$(cd "$project" && pwd)")}" | tr -c 'A-Za-z0-9._-' '-' | sed 's/--*/-/g; s/-$//')"
 
 if [[ "$command" == detect ]]; then
-  presets_json="$(printf '%s\n' "${presets[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')"
+  presets_json="$(printf '%s\n' ${presets[@]+"${presets[@]}"} | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')"
   cat <<OUT
 project=$project
 name=$name
@@ -177,7 +180,7 @@ setup() {
     return
   fi
   $templates && args+=(--templates)
-  GODOT_VERSION="$version" GODOT_RELEASE="$release" "$here/install.sh" "${args[@]}" | grep -v '^\[godot-ci\] Ready' || true
+  GODOT_VERSION="$version" GODOT_RELEASE="$release" "$here/install.sh" ${args[@]+"${args[@]}"}
   # shellcheck disable=SC1091
   source "${GODOT_TOOLS_DIR:-$HOME/.godot-ci}/env.sh"
   export GODOT_CI_INSTALLED="$godot_version"
