@@ -206,6 +206,7 @@ jobs:
         with:
           pattern: ${{ needs.test.outputs.name }}-*
           path: dist
+          merge-multiple: true
 
       - shell: pwsh
         env:

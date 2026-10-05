@@ -17,9 +17,10 @@ $version = if ($Tag) { $Tag } else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
 $out = Join-Path $Dist '_release'
 New-Item -ItemType Directory -Force $out | Out-Null
 $zips = @()
-# download-artifact puts each export artifact (named <name>-<preset>) in its own folder.
+# The workflow downloads every export artifact with merge-multiple, so each preset's build is in
+# <Dist>/<preset>/ (exports are written to <output>/<preset>/), however many artifacts there are.
 foreach ($dir in Get-ChildItem -LiteralPath $Dist -Directory | Where-Object Name -ne '_release') {
-    $preset = $dir.Name.Substring($Name.Length).TrimStart('-')
+    $preset = $dir.Name
     $zip = Join-Path $out "$Name-$version-$preset.zip"
     Compress-Archive -Path (Join-Path $dir.FullName '*') -DestinationPath $zip -Force
     Write-Host ("Packed {0} ({1:N1} MB)" -f (Split-Path $zip -Leaf), ((Get-Item $zip).Length / 1MB))

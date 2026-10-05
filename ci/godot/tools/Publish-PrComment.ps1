@@ -26,7 +26,10 @@ function Get-BaselineCoverage {
     if (-not $env:GITHUB_BASE_REF) { return $null }
     try {
         $artifacts = (Invoke-RestMethod -Headers $headers "$api/repos/$repo/actions/artifacts?name=$([uri]::EscapeDataString($ArtifactName))&per_page=50").artifacts
-        $baseline = $artifacts | Where-Object { -not $_.expired -and $_.workflow_run.head_branch -eq $env:GITHUB_BASE_REF } | Select-Object -First 1
+        $baseline = $null
+        foreach ($artifact in $artifacts) {
+            if (-not $artifact.expired -and $artifact.workflow_run.head_branch -eq $env:GITHUB_BASE_REF) { $baseline = $artifact; break }
+        }
         if (-not $baseline) { return $null }
         $zip = Join-Path ([IO.Path]::GetTempPath()) "baseline-$([guid]::NewGuid()).zip"
         Invoke-WebRequest -Headers $headers -Uri $baseline.archive_download_url -OutFile $zip
@@ -67,8 +70,12 @@ $body.Add("[Run details]($runUrl)")
 $payload = @{ body = ($body -join "`n") } | ConvertTo-Json
 
 try {
-    $comments = @(Invoke-RestMethod -Headers $headers "$api/repos/$repo/issues/$PullRequest/comments?per_page=100")
-    $existing = $comments | Where-Object { $_.body -and $_.body.StartsWith($marker) } | Select-Object -First 1
+    # foreach, not Where-Object: Invoke-RestMethod returns a JSON array as one object (empty or not).
+    $comments = Invoke-RestMethod -Headers $headers "$api/repos/$repo/issues/$PullRequest/comments?per_page=100"
+    $existing = $null
+    foreach ($comment in $comments) {
+        if ($comment.body -and $comment.body.StartsWith($marker)) { $existing = $comment; break }
+    }
     if ($existing) {
         Invoke-RestMethod -Method Patch -Headers $headers -Body $payload -ContentType 'application/json' "$api/repos/$repo/issues/comments/$($existing.id)" | Out-Null
         Write-Host "Updated the test summary comment on #$PullRequest"
