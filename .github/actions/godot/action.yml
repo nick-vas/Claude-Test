@@ -1,0 +1,117 @@
+name: Godot
+description: Build, test or export a Godot 4 project (GDScript or C#) with ci/godot/godot-ci.ps1. Detects the project, Godot version and test frameworks; caches everything.
+inputs:
+  command:
+    description: "test (default), build, or export"
+    default: test
+  project:
+    description: Folder with project.godot (default - detected)
+    default: ""
+  godot-version:
+    description: "e.g. 4.6.1 or 4.7-rc1 (default - from Godot.NET.Sdk in the csproj, else 4.6.1)"
+    default: ""
+  runners:
+    description: "Comma list of dotnet, gdunit4, godottest, gut, smoke, or none (default - detected)"
+    default: ""
+  filter:
+    description: Test filter passed to each runner
+    default: ""
+  coverage:
+    description: Collect coverage into the results artifact and job summary
+    default: "false"
+  preset:
+    description: "export: one preset name (default - every preset)"
+    default: ""
+  retention-days:
+    description: Days to keep uploaded artifacts
+    default: "14"
+outputs:
+  presets:
+    description: JSON array of the project's export presets
+    value: ${{ steps.detect.outputs.presets }}
+runs:
+  using: composite
+  steps:
+    - id: detect
+      shell: pwsh
+      env:
+        CLI: ${{ github.action_path }}/../../../ci/godot/godot-ci.ps1
+        PROJECT: ${{ inputs.project }}
+        GODOT_VERSION_INPUT: ${{ inputs.godot-version }}
+      run: |
+        $params = @{ GitHubOutput = $true }
+        if ($env:PROJECT) { $params.Project = $env:PROJECT }
+        if ($env:GODOT_VERSION_INPUT) { $params.GodotVersion = $env:GODOT_VERSION_INPUT }
+        & $env:CLI detect @params
+        $templates = if ($IsWindows) { Join-Path $env:APPDATA 'Godot/export_templates' }
+          else { Join-Path $HOME '.local/share/godot/export_templates' }
+        "templates=$templates" >> $env:GITHUB_OUTPUT
+
+    - uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: 8.0.x
+
+    - uses: actions/cache@v6
+      with:
+        path: ~/.godot-ci
+        key: godot-ci-${{ runner.os }}-${{ runner.arch }}-${{ steps.detect.outputs.godot-version }}
+
+    - if: inputs.command == 'export'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.detect.outputs.templates }}
+        key: godot-templates-${{ runner.os }}-${{ steps.detect.outputs.godot-version }}
+
+    - uses: actions/cache@v6
+      with:
+        path: ~/.nuget/packages
+        key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Packages.props', '**/packages.lock.json') }}
+        restore-keys: nuget-${{ runner.os }}-
+
+    - id: run
+      shell: pwsh
+      env:
+        CLI: ${{ github.action_path }}/../../../ci/godot/godot-ci.ps1
+        COMMAND: ${{ inputs.command }}
+        PROJECT: ${{ steps.detect.outputs.project }}
+        NAME: ${{ steps.detect.outputs.name }}
+        GODOT_VERSION_INPUT: ${{ steps.detect.outputs.godot-version }}
+        RUNNERS: ${{ inputs.runners }}
+        FILTER: ${{ inputs.filter }}
+        COVERAGE: ${{ inputs.coverage }}
+        PRESET: ${{ inputs.preset }}
+      run: |
+        $results = Join-Path $env:RUNNER_TEMP 'godot-test-results'
+        $output = Join-Path $env:RUNNER_TEMP 'godot-build'
+        # Unique per OS and project, so matrix and monorepo callers don't collide.
+        $preset = if ($env:PRESET) { $env:PRESET } else { 'all' }
+        @(
+          "results=$results"
+          "output=$output"
+          "artifact=$env:NAME-$env:RUNNER_OS"
+          "export-artifact=$env:NAME-$(($preset -replace '[^A-Za-z0-9._-]+', '-').Trim('-'))"
+        ) >> $env:GITHUB_OUTPUT
+
+        $params = @{ Project = $env:PROJECT; GodotVersion = $env:GODOT_VERSION_INPUT; Results = $results; Output = $output }
+        if ($env:RUNNERS) { $params.Runners = $env:RUNNERS }
+        if ($env:FILTER) { $params.Filter = $env:FILTER }
+        if ($env:COVERAGE -eq 'true') { $params.Coverage = $true }
+        if ($env:PRESET) { $params.Preset = $env:PRESET }
+        & $env:CLI $env:COMMAND @params
+        exit $LASTEXITCODE
+
+    - if: always() && inputs.command == 'test' && steps.run.outputs.results != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results-${{ steps.run.outputs.artifact }}
+        path: ${{ steps.run.outputs.results }}
+        if-no-files-found: ignore
+        retention-days: ${{ inputs.retention-days }}
+
+    - if: inputs.command == 'export'
+      uses: actions/upload-artifact@v7
+      with:
+        # One artifact per call: export a single preset per job to get one download per platform.
+        name: ${{ steps.run.outputs.export-artifact }}
+        path: ${{ steps.run.outputs.output }}
+        retention-days: ${{ inputs.retention-days }}

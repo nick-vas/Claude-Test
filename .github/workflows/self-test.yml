@@ -1,4 +1,5 @@
-# Exercises the pipeline suite against examples/breakout on every change.
+# Exercises the suite on every change: the reusable workflow on Linux runners, and the script on Windows
+# exactly as it runs on a developer machine.
 name: Self-test
 
 on:
@@ -15,8 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: shellcheck
-        run: shellcheck -x ci/godot/*.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path ci/godot -Recurse -Settings ci/godot/PSScriptAnalyzerSettings.psd1
+          $issues | Format-Table -AutoSize RuleName, ScriptName, Line, Message | Out-String -Width 200
+          if ($issues) { exit 1 }
       - name: Parse action manifests
         # actionlint covers workflows only; make sure every composite action is valid YAML.
         run: |
@@ -29,48 +34,48 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
 
-  # The full pipeline: every test framework, coverage, then exports.
-  ci:
-    uses: ./.github/workflows/godot-ci.yml
+  # No inputs at all: detects the shallowest project (examples/gdscript), installs GUT, runs gut + smoke.
+  zero-config:
+    uses: ./.github/workflows/godot.yml
+
+  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage, then the
+  # Windows export built on Linux.
+  csharp:
+    uses: ./.github/workflows/godot.yml
     with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      addons: gut@v9.6.1
-      test-runners: '["dotnet", "gdunit4", "godottest", "gut", "smoke"]'
-      godottest-scene: res://test/godottest/GoDotTestRunner.tscn
+      project: examples/breakout/game
       coverage: true
-      export-presets: '["Linux", "Windows"]'
-      artifact-prefix: breakout
+      exports: all
       retention-days: 3
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
 
-  # The standalone pieces, called with the same inputs to prove they swap in.
-  build-only:
-    uses: ./.github/workflows/godot-build.yml
+  # Runners picked by hand.
+  explicit-runners:
+    uses: ./.github/workflows/godot.yml
     with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
+      project: examples/breakout/game
+      runners: gdunit4,gut
 
-  smoke-only:
-    uses: ./.github/workflows/godot-test.yml
-    with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      test-runners: '["smoke"]'
-      smoke-frames: 600
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
+  # The composite action inside a custom workflow.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/godot
+        with:
+          command: build
+          project: examples/breakout/game
 
-  macos:
-    uses: ./.github/workflows/godot-test.yml
-    with:
-      project-path: examples/breakout/game
-      solution: examples/breakout/Breakout.sln
-      addons: gut@v9.6.1
-      test-runners: '["dotnet", "gut"]'
-      runs-on: macos-latest
-      pipelines-repo: ${{ github.repository }}
-      pipelines-ref: ${{ github.sha }}
+  # The script on Windows, as on a developer machine: no workflow, no action.
+  local-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: GDScript example
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/gdscript
+      - name: C# example with coverage
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/breakout/game -Coverage
+      - name: Filtered run
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/breakout/game -Runners dotnet -Filter 'FullyQualifiedName~RunState'

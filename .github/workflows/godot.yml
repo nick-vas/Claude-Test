@@ -1,0 +1,143 @@
+# Reusable Godot 4 pipeline that packs the PowerShell test suite (ci/godot/godot-ci.ps1) for a Linux
+# runner: one test job (build once, run every detected test framework), then optional exports, one job
+# per preset. The same script runs locally on Windows. Works with no inputs at all:
+#
+#   jobs:
+#     godot:
+#       uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
+#
+# See README.md for usage scenarios.
+name: Godot
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Folder with project.godot (default - detected)
+        type: string
+        default: ""
+      godot-version:
+        description: "e.g. 4.6.1 or 4.7-rc1 (default - from Godot.NET.Sdk in the csproj, else 4.6.1)"
+        type: string
+        default: ""
+      runners:
+        description: "Comma list of dotnet, gdunit4, godottest, gut, smoke; none to only build (default - detected)"
+        type: string
+        default: ""
+      filter:
+        description: Test filter passed to each runner
+        type: string
+        default: ""
+      coverage:
+        description: Collect coverage and add it to the job summary
+        type: boolean
+        default: false
+      exports:
+        description: 'Presets to export after tests pass: "all", a comma list of preset names, or empty for none'
+        type: string
+        default: ""
+      runs-on:
+        description: Runner label. Linux is cheapest; windows-latest also works
+        type: string
+        default: ubuntu-latest
+      lfs:
+        description: Check out Git LFS files
+        type: boolean
+        default: false
+      submodules:
+        description: "Check out submodules: false, true or recursive"
+        type: string
+        default: "false"
+      retention-days:
+        description: Days to keep test results and exports
+        type: number
+        default: 14
+    outputs:
+      presets:
+        description: JSON array of the presets that were exported
+        value: ${{ jobs.test.outputs.presets }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ inputs.runs-on }}
+    outputs:
+      presets: ${{ steps.exports.outputs.presets }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: ${{ inputs.lfs }}
+          submodules: ${{ inputs.submodules }}
+
+      # This workflow's own repository at the exact commit the caller pinned, so the scripts always
+      # match the workflow version without any extra input.
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'nick-vas/Godot_TestSuite' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: .godot-pipelines
+
+      # Keep Godot from importing the pipeline repository's example projects.
+      - run: touch .godot-pipelines/.gdignore
+
+      - id: godot
+        uses: ./.godot-pipelines/.github/actions/godot
+        with:
+          command: test
+          project: ${{ inputs.project }}
+          godot-version: ${{ inputs.godot-version }}
+          runners: ${{ inputs.runners }}
+          filter: ${{ inputs.filter }}
+          coverage: ${{ inputs.coverage }}
+          retention-days: ${{ inputs.retention-days }}
+
+      - id: exports
+        shell: pwsh
+        env:
+          WANTED: ${{ inputs.exports }}
+          DETECTED: ${{ steps.godot.outputs.presets }}
+        run: |
+          $detected = @(if ($env:DETECTED) { $env:DETECTED | ConvertFrom-Json })
+          $wanted = $env:WANTED.Trim()
+          $presets = @(
+            if ($wanted -eq 'all') { $detected }
+            elseif ($wanted) { $wanted -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
+          )
+          $missing = @($presets | Where-Object { $_ -notin $detected })
+          if ($missing) { Write-Host "::error::Unknown export presets $($missing -join ', '); the project has $($detected -join ', ')"; exit 1 }
+          "presets=$(ConvertTo-Json -Compress -InputObject $presets)" >> $env:GITHUB_OUTPUT
+
+  export:
+    name: Export (${{ matrix.preset }})
+    needs: test
+    if: needs.test.outputs.presets != '[]'
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: ${{ fromJSON(needs.test.outputs.presets) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: ${{ inputs.lfs }}
+          submodules: ${{ inputs.submodules }}
+
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'nick-vas/Godot_TestSuite' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: .godot-pipelines
+
+      - run: touch .godot-pipelines/.gdignore
+
+      - uses: ./.godot-pipelines/.github/actions/godot
+        with:
+          command: export
+          project: ${{ inputs.project }}
+          godot-version: ${{ inputs.godot-version }}
+          runners: none
+          preset: ${{ matrix.preset }}
+          retention-days: ${{ inputs.retention-days }}

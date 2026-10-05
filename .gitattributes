@@ -1,0 +1,2 @@
+# PowerShell runs scripts with either line ending; keep them LF in the repository.
+*.ps1 text eol=lf
