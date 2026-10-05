@@ -136,7 +136,8 @@ jobs:
           project-path: ${{ inputs.project-path }}
           solution: ${{ inputs.solution }}
           filter: ${{ inputs.test-filter }}
-          scene: ${{ matrix.runner == 'godottest' && inputs.godottest-scene || inputs.smoke-scene }}
+          # Spelled out so an empty godottest-scene stays empty instead of falling through to smoke-scene.
+          scene: ${{ matrix.runner == 'godottest' && inputs.godottest-scene || matrix.runner != 'godottest' && inputs.smoke-scene || '' }}
           frames: ${{ inputs.smoke-frames }}
           coverage: ${{ inputs.coverage }}
           artifact-name: test-results-${{ matrix.runner }}

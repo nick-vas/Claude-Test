@@ -37,6 +37,9 @@ done
 
 mkdir -p "$results"
 results="$(cd "$results" && pwd)"
+# report.py reads every result file here, so drop leftovers from earlier runs (e.g. repeated local runs).
+find "$results" \( -name '*.trx' -o -name '*.junit.xml' -o -name '*.log' -o -name '*.runsettings' \) -delete
+rm -rf "$results/coverage"
 project="$(cd "$project" && pwd)"
 resolve_godot
 tools_dir="${GODOT_TOOLS_DIR:-$HOME/.godot-ci}/tools"
@@ -77,6 +80,8 @@ PY
 
 # Shared by dotnet and gdunit4: gdUnit4Net reads GODOT_BIN and Godot arguments from here, and other
 # frameworks ignore the GdUnit4 section, so any solution can mix plain and engine tests.
+# No TreatNoTestsAsError: with --filter, projects without a match would fail the run. report.py
+# fails the run instead when nothing at all was reported.
 write_runsettings() {
   cat > "$results/godot.runsettings" <<XML
 <?xml version="1.0" encoding="utf-8"?>
@@ -84,7 +89,6 @@ write_runsettings() {
   <RunConfiguration>
     <MaxCpuCount>1</MaxCpuCount>
     <TestSessionTimeout>1800000</TestSessionTimeout>
-    <TreatNoTestsAsError>true</TreatNoTestsAsError>
     <EnvironmentVariables>
       <GODOT_BIN>$GODOT_BIN</GODOT_BIN>
     </EnvironmentVariables>

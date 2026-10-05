@@ -49,12 +49,19 @@ check_godot_log() {
   local plain
   plain="$(mktemp)"
   sed $'s/\x1b\\[[0-9;]*m//g' "$logfile" > "$plain" && mv "$plain" "$logfile"
-  if grep -E "$pattern" "$logfile" | grep -Evq "$ignore"; then
+  # grep exits 2 on a bad regex, which would otherwise read as "no errors".
+  local rc=0
+  grep -E "$ignore" /dev/null || rc=$?
+  [[ $rc -le 1 ]] || die "GODOT_CI_IGNORE_ERRORS is not a valid extended regex: $GODOT_CI_IGNORE_ERRORS"
+  # Read every line rather than stopping at the first match: an early exit (-q) SIGPIPEs the upstream
+  # grep, and under pipefail that turns a log full of errors into a pass.
+  local errors noise
+  errors="$(grep -E "$pattern" "$logfile" | grep -Ev "$ignore" || true)"
+  if [[ -n "$errors" ]]; then
     echo "[godot-ci] Godot reported errors:" >&2
-    grep -E -A3 "$pattern" "$logfile" | grep -Ev "$ignore" | head -n 60 >&2
+    grep -E -A3 "$pattern" "$logfile" | grep -Ev "$ignore" | head -n 60 >&2 || true
     return 1
   fi
-  if grep -E "$pattern" "$logfile" | grep -Eq "$ignore"; then
-    log "Ignored known engine noise: $(grep -E "$pattern" "$logfile" | grep -E "$ignore" | head -n1)"
-  fi
+  noise="$(grep -E "$pattern" "$logfile" | grep -E "$ignore" || true)"
+  [[ -z "$noise" ]] || log "Ignored known engine noise: ${noise%%$'\n'*}"
 }

@@ -63,18 +63,25 @@ def read_junit(path, totals):
 
 def read_trx(path, totals):
     root = strip_ns(ET.parse(path).getroot())
-    for result in root.iter("UnitTestResult"):
-        outcome = result.get("outcome", "")
-        totals.total += 1
-        if outcome == "Passed":
-            totals.passed += 1
-        elif outcome in ("Failed", "Error", "Timeout", "Aborted"):
-            totals.failed += 1
-            message = result.findtext("Output/ErrorInfo/Message") or outcome
-            stack = result.findtext("Output/ErrorInfo/StackTrace") or ""
-            totals.failures.append(Failure(result.get("testName", "?"), message, stack))
-        else:
-            totals.skipped += 1
+    results = root.find("Results")
+    for top in (results if results is not None else []):
+        if top.tag != "UnitTestResult":
+            continue
+        # Data-driven tests (e.g. MSTest [DataRow]) nest one result per row under an aggregate parent;
+        # count the rows, not the parent as well.
+        inner = top.findall("InnerResults/UnitTestResult")
+        for result in inner or [top]:
+            outcome = result.get("outcome", "")
+            totals.total += 1
+            if outcome == "Passed":
+                totals.passed += 1
+            elif outcome in ("Failed", "Error", "Timeout", "Aborted"):
+                totals.failed += 1
+                message = result.findtext("Output/ErrorInfo/Message") or outcome
+                stack = result.findtext("Output/ErrorInfo/StackTrace") or ""
+                totals.failures.append(Failure(result.get("testName", "?"), message, stack))
+            else:
+                totals.skipped += 1
 
 
 def annotation(runner, failure):
@@ -98,7 +105,7 @@ def summary(args):
     results = Path(args.results)
     totals = Totals()
     for path in sorted(results.rglob("*")):
-        if "coverage" in path.parts or not path.is_file():
+        if not path.is_file() or path.relative_to(results).parts[0] == "coverage":
             continue
         try:
             if path.name.endswith(".junit.xml"):
@@ -123,7 +130,8 @@ def summary(args):
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
         write_summary(summary_file, args, totals, results, icon)
-    return 0 if totals.total > 0 else 1
+    # Fail on reported failures too, not only on the runner's exit code.
+    return 0 if ok else 1
 
 
 def write_summary(summary_file, args, totals, results, icon):
