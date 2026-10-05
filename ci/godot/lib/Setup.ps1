@@ -136,6 +136,9 @@ function Install-GodotTools {
     $env:DOTNET_NOLOGO = '1'
     if ($env:GITHUB_ENV) {
         Add-Content -LiteralPath $env:GITHUB_ENV -Value "GODOT_BIN=$($paths.Bin)"
+        # Marks GODOT_BIN as ours, so a later step for another project picks its own Godot build instead
+        # of treating this one as a Godot the user chose.
+        Add-Content -LiteralPath $env:GITHUB_ENV -Value 'GODOT_CI_INSTALLED=1'
         if ($env:DOTNET_ROOT) {
             Add-Content -LiteralPath $env:GITHUB_ENV -Value "DOTNET_ROOT=$env:DOTNET_ROOT"
             Add-Content -LiteralPath $env:GITHUB_PATH -Value $env:DOTNET_ROOT
