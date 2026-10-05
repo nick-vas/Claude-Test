@@ -1,19 +1,28 @@
 # Godot Test Suite
 
-Build, test and export **Godot 4** projects (GDScript or C#) with one command locally, or with a
-three-line GitHub workflow. It detects your project, Godot version and test frameworks for you.
+Build, test and export **Godot 4** projects (GDScript or C#). It's one PowerShell script that you run
+locally on Windows, and the same script packed into a GitHub workflow for a Linux runner. It detects your
+project, Godot version and test frameworks for you.
+
+```powershell
+pwsh ci/godot/godot-ci.ps1            # locally: install Godot if needed, build, run every test
+```
 
 ```yaml
-# .github/workflows/ci.yml
+# .github/workflows/ci.yml: the same tests on a GitHub Linux runner
 on: [push, pull_request]
 jobs:
   godot:
     uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 ```
 
-```bash
-ci/godot/godot-ci            # the same thing on your machine: install, build, run every test
-```
+**Requirements:**
+- [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell-on-windows)
+  (`winget install Microsoft.PowerShell`)
+- the [.NET 8 SDK](https://dotnet.microsoft.com/download) for C# projects
+- Git
+
+The script downloads Godot itself. GitHub's Linux runners already have all of this.
 
 ## What it detects
 
@@ -26,15 +35,30 @@ ci/godot/godot-ci            # the same thing on your machine: install, build, r
 | `Chickensoft.GoDotTest` in the `.csproj` | **godottest** runner, using the scene whose script calls `GoTest.RunTests` |
 | `.gd` files that `extends GutTest` | **gut** runner; installs the [GUT](https://github.com/bitwes/Gut) release that matches your Godot |
 | `run/main_scene` in `project.godot` | **smoke** runner: plays the main scene headless and fails on any error |
-| presets in `export_presets.cfg` | what `exports: all` and `godot-ci export` build |
+| presets in `export_presets.cfg` | what `export` builds |
 
-All runners run in one job after one build. Every run gets a results table on the run page, and failures
-are annotated on the failing line. A run that finds zero tests fails, and so does any Godot `ERROR:`,
-even when Godot exits 0.
+All runners run one after another after a single build. A run that finds zero tests fails, and so does any
+Godot `ERROR:`, even when Godot exits 0. On GitHub, every run gets a results table on its run page, and
+failures are annotated on the failing line.
 
 ## Usage scenarios
 
-### 1. Add CI to a C# game with no configuration
+### 1. Run the tests locally in PowerShell
+
+Put the suite in your game's repository, either as a submodule (easy to update) or by copying the
+`ci/godot` folder:
+```powershell
+git submodule add https://github.com/nick-vas/Godot_TestSuite tools/godot-test-suite
+```
+Then, from your repository root:
+```powershell
+pwsh tools/godot-test-suite/ci/godot/godot-ci.ps1           # build + every detected test
+pwsh tools/godot-test-suite/ci/godot/godot-ci.ps1 detect    # show what it found, change nothing
+Get-Help tools/godot-test-suite/ci/godot/godot-ci.ps1 -Detailed
+```
+Godot is downloaded once to `~/.godot-ci`. Results land in `test-results/`.
+
+### 2. The same tests on a GitHub Linux runner
 
 ```yaml
 on: [push, pull_request]
@@ -42,31 +66,21 @@ jobs:
   godot:
     uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 ```
-The Godot version comes from your csproj, the test frameworks from your packages and scripts. Nothing to
-keep in sync when you upgrade Godot: bump `Godot.NET.Sdk` and CI follows.
+This runs the same script, with the same detection, on `ubuntu-latest`, the cheapest runner. You don't need
+the submodule for CI; the workflow brings its own copy of the script, pinned to the `@ref` you use.
 
-### 2. A GDScript-only game with GUT
+### 3. A GDScript-only game with GUT
 
-The same three lines. Write tests as `test/test_*.gd` files that `extends GutTest`. The pipeline installs the
-GUT version for your Godot release; you don't commit `addons/gut`. See
-[`examples/gdscript`](examples/gdscript).
+Nothing extra to configure. Write `test_*.gd` files that `extends GutTest`, and the suite installs the GUT
+version for your Godot release; you don't commit `addons/gut`. See [`examples/gdscript`](examples/gdscript).
 
-### 3. Run everything locally, or in a Claude Code cloud session
+### 4. A C# game with unit tests, scene tests and in-engine tests
 
-```bash
-ci/godot/godot-ci                   # install Godot if needed, build, run all detected tests
-ci/godot/godot-ci detect            # show what it found, change nothing
-ci/godot/godot-ci --runners gut     # just one framework
-```
-To use it from another repo without copying the scripts, add this repository as a git submodule, or copy
-the `ci/godot` folder. In a Claude Code cloud environment, add this to the setup script so Godot is ready
-when a session starts:
-```bash
-curl -fsSL https://raw.githubusercontent.com/nick-vas/Godot_TestSuite/main/ci/godot/install.sh | bash
-```
-On Windows, use WSL, or run your framework directly (`dotnet test`, or the GUT panel in the editor).
+Keep engine-free logic in a class library tested with xUnit, add gdUnit4Net scene tests, and optionally
+GoDotTest suites. All of them are detected and run. See [`examples/breakout`](examples/breakout) and the
+[framework setup notes](docs/godot-pipelines.md#setting-each-one-up).
 
-### 4. Fast pull-request checks, full runs on `main`
+### 5. Fast pull-request checks, full runs on `main`
 
 ```yaml
 on:
@@ -81,7 +95,7 @@ jobs:
       runners: ${{ github.event_name == 'pull_request' && 'dotnet' || '' }}
 ```
 
-### 5. Release builds when you push a tag
+### 6. Windows builds on every tag
 
 ```yaml
 on:
@@ -91,34 +105,36 @@ jobs:
   release:
     uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
     with:
-      exports: all            # or "Linux,Windows"
+      exports: Windows        # a preset name from export_presets.cfg, or "all"
       retention-days: 30
 ```
-Tests run first; each preset then exports in its own job and uploads as `<game name>-<preset>`.
-Windows and macOS builds export fine from the Linux runner. Test code stays out of release builds if you
-follow [the export notes](docs/godot-pipelines.md#keep-tests-out-of-release-builds).
+Tests run first, then the Linux runner exports the Windows `.exe` and uploads it as `<game name>-Windows`.
+Locally: `pwsh ci/godot/godot-ci.ps1 export -Preset Windows` (output in `build/`). Test code stays out of
+release builds if you follow [the export notes](docs/godot-pipelines.md#keep-tests-out-of-release-builds).
 
-### 6. Coverage report
+### 7. Coverage report
 
-```yaml
-    with:
-      coverage: true
+```powershell
+pwsh ci/godot/godot-ci.ps1 -Coverage      # report: test-results/coverage/index.html
 ```
-or `ci/godot/godot-ci --coverage` locally. One merged HTML report lands in
-`test-results/coverage/index.html`, and a summary on the run page. GoDotTest measures code that only runs
-inside the engine. dotnet coverage needs `coverlet.collector` in your test project.
+In the workflow, set `coverage: true` to get the summary on the run page as well. GoDotTest measures code
+that only runs inside the engine. dotnet coverage needs `coverlet.collector` in your test project.
 
-### 7. Run a subset of tests
+### 8. Run a subset of tests
 
-```bash
-ci/godot/godot-ci --runners dotnet --filter "FullyQualifiedName~Combo"   # dotnet test filter
-ci/godot/godot-ci --runners gut --filter test_combo                       # GUT test name
-ci/godot/godot-ci --runners godottest --filter PlayerTest                 # GoDotTest suite
+```powershell
+pwsh ci/godot/godot-ci.ps1 -Runners dotnet -Filter 'FullyQualifiedName~Combo'   # dotnet test filter
+pwsh ci/godot/godot-ci.ps1 -Runners gut -Filter test_combo                       # GUT test name
+pwsh ci/godot/godot-ci.ps1 -Runners godottest -Filter PlayerTest                 # GoDotTest suite
+pwsh ci/godot/godot-ci.ps1 -Runners none                                         # build only
 ```
-The same `runners` and `filter` inputs work in the workflow, e.g. for a manual `workflow_dispatch` run.
+The workflow takes the same values as `runners` and `filter` inputs, e.g. for a manual `workflow_dispatch`.
 
-### 8. Several games in one repository
+### 9. Several games in one repository
 
+```powershell
+pwsh ci/godot/godot-ci.ps1 -Project games/arena
+```
 ```yaml
 jobs:
   godot:
@@ -131,15 +147,6 @@ jobs:
 ```
 Artifacts are named after each game's `config/name`, so they don't collide.
 
-### 9. Try a different Godot version, or test on macOS
-
-```yaml
-    with:
-      godot-version: 4.7-rc1     # any tag from godotengine/godot-builds
-      runs-on: macos-latest
-```
-For C# projects, prefer bumping `Godot.NET.Sdk` in the csproj so the editor, CI and NuGet agree.
-
 ### 10. Your own workflow, using the action
 
 ```yaml
@@ -151,34 +158,40 @@ jobs:
       - uses: nick-vas/Godot_TestSuite/.github/actions/godot@main
         with:
           command: export        # test, build or export
-          preset: Linux
-      - run: echo "upload the Linux build to itch.io, Steam, ..."
+          preset: Windows
+      - run: echo "upload the Windows build to itch.io, Steam, ..."
 ```
 The action handles setup and caching, then uploads results or builds as artifacts.
 
 ## Reference
 
-**Workflow inputs** (`godot.yml`): all optional.
+**Script** (`ci/godot/godot-ci.ps1`): commands `test` (default), `build`, `export`, `setup` and `detect`.
 
-| Input | Default | |
+| Parameter | Default | |
 |---|---|---|
-| `project` | detected | Folder with `project.godot` |
-| `godot-version` | from csproj, else `4.6.1` | e.g. `4.6.1`, `4.7-rc1` |
-| `runners` | detected | `dotnet`, `gdunit4`, `godottest`, `gut`, `smoke`, comma-separated; `none` to only build |
-| `filter` | | Passed to each runner's filter |
-| `coverage` | `false` | Merged coverage report and summary |
-| `exports` | none | `all`, or a comma list of preset names |
-| `runs-on` | `ubuntu-latest` | Linux or macOS runner |
-| `lfs`, `submodules` | `false` | Passed to `actions/checkout` |
-| `retention-days` | `14` | For results and builds |
+| `-Project` | detected | Folder with `project.godot` |
+| `-Solution` | nearest `.sln` | What `dotnet build` / `dotnet test` run on |
+| `-GodotVersion` | from csproj, else `4.6.1` | e.g. `4.6.1`, `4.7-rc1` |
+| `-Runners` | detected | `dotnet`, `gdunit4`, `godottest`, `gut`, `smoke`; `none` to only build |
+| `-Filter` | | Passed to each runner's filter |
+| `-Coverage` | off | One merged coverage report |
+| `-Preset` | every preset | `export`: which presets |
+| `-Results`, `-Output` | `test-results`, `build` | Where results and exports go |
+| `-Frames` | `120` | How long the smoke run plays |
 
-**CLI** (`ci/godot/godot-ci`): commands `test` (default), `build`, `export`, `setup` and `detect`.
-Options mirror the inputs: `--project`, `--godot-version`, `--runners`, `--filter`, `--coverage`,
-`--preset NAME`, `--results DIR`, `--output DIR`. Run `ci/godot/godot-ci --help` for the full list.
+**Workflow inputs** (`godot.yml`), all optional: `project`, `godot-version`, `runners`, `filter`,
+`coverage`, `exports` (`all` or preset names), `runs-on` (default `ubuntu-latest`; `windows-latest` also
+works), `lfs`, `submodules`, `retention-days`.
 
 **Cost:** jobs run in the repository that calls the workflow. They're free on public repositories; on private
-ones they use your Actions minutes, and macOS minutes count about 10×. One test job builds once for every
-framework, and exports only run when you ask for them.
+ones they use your Actions minutes, and Linux runners are the cheapest (Windows minutes count about 2×).
+One test job builds once for every framework, and exports only run when you ask for them.
 
-More detail on each framework, the five most popular Godot test projects, and how to set each one up:
+**Claude Code cloud sessions** run Linux. Install PowerShell in the environment's setup script, then use
+the script as usual:
+```bash
+mkdir -p /opt/pwsh && curl -fsSL https://github.com/PowerShell/PowerShell/releases/download/v7.6.6/powershell-7.6.6-linux-x64.tar.gz | tar xz -C /opt/pwsh && ln -sf /opt/pwsh/pwsh /usr/local/bin/pwsh
+```
+
+More on each framework, the five most popular Godot test projects, and how to set each one up:
 [docs/godot-pipelines.md](docs/godot-pipelines.md).

@@ -1,4 +1,5 @@
-# Exercises the pipeline against the examples on Windows, through every entry point.
+# Exercises the suite on every change: the reusable workflow on Linux runners, and the script on Windows
+# exactly as it runs on a developer machine.
 name: Self-test
 
 on:
@@ -11,13 +12,16 @@ permissions:
   contents: read
 
 jobs:
-  # Static checks only (no Godot), so they run on the cheaper Linux runner.
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: shellcheck
-        run: shellcheck -x ci/godot/*.sh ci/godot/godot-ci
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $issues = Invoke-ScriptAnalyzer -Path ci/godot -Recurse -Settings ci/godot/PSScriptAnalyzerSettings.psd1
+          $issues | Format-Table -AutoSize RuleName, ScriptName, Line, Message | Out-String -Width 200
+          if ($issues) { exit 1 }
       - name: Parse action manifests
         # actionlint covers workflows only; make sure every composite action is valid YAML.
         run: |
@@ -34,8 +38,8 @@ jobs:
   zero-config:
     uses: ./.github/workflows/godot.yml
 
-  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage and the
-  # Windows export.
+  # C# project: detected dotnet (xUnit + gdUnit4Net), godottest, gut and smoke, with coverage, then the
+  # Windows export built on Linux.
   csharp:
     uses: ./.github/workflows/godot.yml
     with:
@@ -51,29 +55,27 @@ jobs:
       project: examples/breakout/game
       runners: gdunit4,gut
 
-  # The CLI on a bare Windows runner, from Git Bash, cmd and PowerShell, as on a developer machine.
-  cli:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Git Bash
-        shell: bash
-        run: ci/godot/godot-ci test --project examples/gdscript
-      - name: cmd
-        shell: cmd
-        run: ci\godot\godot-ci.cmd test --project examples/breakout/game --runners dotnet --filter "FullyQualifiedName~RunState"
-      - name: PowerShell
-        shell: pwsh
-        run: |
-          .\ci\godot\godot-ci.cmd detect --project examples/breakout/game
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
   # The composite action inside a custom workflow.
   action:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/godot
         with:
           command: build
           project: examples/breakout/game
+
+  # The script on Windows, as on a developer machine: no workflow, no action.
+  local-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: GDScript example
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/gdscript
+      - name: C# example with coverage
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/breakout/game -Coverage
+      - name: Filtered run
+        shell: pwsh
+        run: ./ci/godot/godot-ci.ps1 test -Project examples/breakout/game -Runners dotnet -Filter 'FullyQualifiedName~RunState'

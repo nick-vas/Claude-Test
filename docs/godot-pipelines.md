@@ -45,7 +45,7 @@ their own.
 4.6.1 and .NET 8:
 
 **gdUnit4Net**: add to the Godot project's csproj, write `[TestSuite]` classes and mark engine tests with
-`[RequireGodotRuntime]`. The pipeline writes the `.runsettings` (`GODOT_BIN`, `--headless`) for you.
+`[RequireGodotRuntime]`. The suite writes the `.runsettings` (`GODOT_BIN`, `--headless`) for you.
 ```xml
 <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
 <PackageReference Include="gdUnit4.api" Version="5.0.0" />
@@ -56,9 +56,9 @@ gdUnit4Net writes a `gdunit4_testadapter_v5/` folder into the project; add it to
 
 **GoDotTest**: reference `Chickensoft.GoDotTest`. 2.0.31 is the last version built against Godot 4.6.1;
 newer ones need Godot 4.7. Add a small scene whose script calls `GoTest.RunTests(...)`, like
-[`GoDotTestRunner.cs`](../examples/breakout/game/test/godottest/GoDotTestRunner.cs); the pipeline finds it.
+[`GoDotTestRunner.cs`](../examples/breakout/game/test/godottest/GoDotTestRunner.cs); the suite finds it.
 
-**GUT**: just write `test_*.gd` scripts that extend `GutTest`. The pipeline installs GUT v9.4.0–v9.7.1 to
+**GUT**: just write `test_*.gd` scripts that extend `GutTest`. The suite installs GUT v9.4.0–v9.7.1 to
 match Godot 4.4–4.7; for other versions, commit `addons/gut` yourself.
 
 ### Keep tests out of release builds
@@ -79,27 +79,27 @@ exclude_filter="test/*, addons/gut/*, gdunit4_testadapter*/*"
 ## Project notes
 
 - If your `.sln` isn't next to `project.godot`, set `dotnet/project/solution_directory` in `project.godot`,
-  or exports fail with *"no solution file was found"*. The pipeline catches this; Godot alone exits 0 and
+  or exports fail with *"no solution file was found"*. The suite catches this; Godot alone exits 0 and
   exports without your C# code.
 - Builds, exports and smoke runs fail on any `ERROR:` or `SCRIPT ERROR:` Godot prints. A short list of
-  engine-internal messages is ignored (`GODOT_CI_KNOWN_NOISE` in [`common.sh`](../ci/godot/common.sh)). To
-  ignore more, set `GODOT_CI_IGNORE_ERRORS` to a regex.
-- `install.sh` falls back to the distro's `dotnet-sdk-8.0` package when Microsoft's download servers are
-  blocked, as they are in sandboxed cloud sessions.
+  engine-internal messages is ignored (`$KnownNoise` in [`lib/Common.ps1`](../ci/godot/lib/Common.ps1)). To
+  ignore more, set the `GODOT_CI_IGNORE_ERRORS` environment variable to a regex.
+- On Linux, if Microsoft's download servers are blocked (as in sandboxed cloud sessions), setup falls back
+  to the distro's `dotnet-sdk-8.0` package.
 
 ## How it fits together
 
 ```
+ci/godot/godot-ci.ps1           the entry point: detect -> setup -> build -> test / export
+ci/godot/lib/Common.ps1         logging, running programs, Godot log checks, file search
+ci/godot/lib/Setup.ps1          .NET SDK, Godot .NET editor, export templates, addons (GUT)
+ci/godot/lib/Detect.ps1         project, solution, Godot version, runners, GoDotTest scene, presets
+ci/godot/lib/Runners.ps1        dotnet | gdunit4 | godottest | gut | smoke
+ci/godot/lib/Report.ps1         JUnit/TRX -> summary, failure annotations, zero-tests check, coverage
+.github/actions/godot           composite action: detect, cache, run godot-ci.ps1, upload artifacts
 .github/workflows/godot.yml     reusable workflow: test job, then one export job per preset
-.github/actions/godot           composite action: detect, cache, run godot-ci, upload artifacts
-ci/godot/godot-ci               the CLI everything goes through: detection + setup → build → test/export
-ci/godot/install.sh             .NET SDK + Godot .NET editor (+ export templates)
-ci/godot/addons.sh              installs GUT / gdUnit4 / any addon from a Git tag
-ci/godot/build.sh               dotnet build + headless import
-ci/godot/test.sh                one runner: dotnet | gdunit4 | godottest | gut | smoke
-ci/godot/report.py              JUnit/TRX → summary, failure annotations, zero-tests check
-ci/godot/export.sh              one export preset
 ```
 
-The workflow checks out its own repository at the exact commit you called it with
-(`job.workflow_repository` / `job.workflow_sha`), so pinning `@v1` or a SHA pins the scripts too.
+Everything goes through `godot-ci.ps1`, so a local run on Windows and a CI run on Linux do the same
+thing. The workflow checks out its own repository at the exact commit you called it with
+(`job.workflow_repository` / `job.workflow_sha`), so pinning `@v1` or a SHA pins the script too.

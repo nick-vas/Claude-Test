@@ -1,6 +1,2 @@
-# Scripts must keep LF line endings: Windows checkouts (core.autocrlf) would otherwise break bash.
-*.sh text eol=lf
-*.py text eol=lf
-ci/godot/godot-ci text eol=lf
-# cmd needs CRLF.
-*.cmd text eol=crlf
+# PowerShell runs scripts with either line ending; keep them LF in the repository.
+*.ps1 text eol=lf

@@ -1,5 +1,6 @@
-# Reusable Godot 4 pipeline: one test job (build once, run every detected test framework),
-# then optional exports, one job per preset. Works with no inputs at all:
+# Reusable Godot 4 pipeline that packs the PowerShell test suite (ci/godot/godot-ci.ps1) for a Linux
+# runner: one test job (build once, run every detected test framework), then optional exports, one job
+# per preset. The same script runs locally on Windows. Works with no inputs at all:
 #
 #   jobs:
 #     godot:
@@ -36,9 +37,9 @@ on:
         type: string
         default: ""
       runs-on:
-        description: Runner label (a Windows runner)
+        description: Runner label. Linux is cheapest; windows-latest also works
         type: string
-        default: windows-latest
+        default: ubuntu-latest
       lfs:
         description: Check out Git LFS files
         type: boolean
@@ -94,25 +95,20 @@ jobs:
           retention-days: ${{ inputs.retention-days }}
 
       - id: exports
-        shell: python
+        shell: pwsh
         env:
           WANTED: ${{ inputs.exports }}
           DETECTED: ${{ steps.godot.outputs.presets }}
         run: |
-          import json, os
-          detected = json.loads(os.environ["DETECTED"] or "[]")
-          wanted = os.environ["WANTED"].strip()
-          if not wanted:
-              presets = []
-          elif wanted == "all":
-              presets = detected
-          else:
-              presets = [p.strip() for p in wanted.split(",") if p.strip()]
-              missing = [p for p in presets if p not in detected]
-              if missing:
-                  raise SystemExit(f"::error::Unknown export presets {missing}; the project has {detected}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"presets={json.dumps(presets)}\n")
+          $detected = @(if ($env:DETECTED) { $env:DETECTED | ConvertFrom-Json })
+          $wanted = $env:WANTED.Trim()
+          $presets = @(
+            if ($wanted -eq 'all') { $detected }
+            elseif ($wanted) { $wanted -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } }
+          )
+          $missing = @($presets | Where-Object { $_ -notin $detected })
+          if ($missing) { Write-Host "::error::Unknown export presets $($missing -join ', '); the project has $($detected -join ', ')"; exit 1 }
+          "presets=$(ConvertTo-Json -Compress -InputObject $presets)" >> $env:GITHUB_OUTPUT
 
   export:
     name: Export (${{ matrix.preset }})
