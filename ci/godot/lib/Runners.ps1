@@ -6,6 +6,7 @@
 #   godottest  Chickensoft GoDotTest: the game runs its own suites from a runner scene
 #   gut        GUT (GDScript): .gutconfig.json if present, else test_*.gd next to any GutTest script
 #   smoke      plays the main scene for N frames and fails on any engine or script error
+#   validate   loads every script, scene and resource and instantiates every scene (tools/validate.gd)
 #
 # -Filter means: dotnet/gdunit4 `dotnet test --filter`; godottest suite name; gut test name.
 
@@ -43,6 +44,30 @@ function Invoke-DotnetTest([string]$Target, [string]$ResultsDir, [string]$Filter
     $code = Invoke-Logged dotnet $arguments
     Stop-LogGroup
     return $code
+}
+
+# One case per file from tools/validate.gd's markers; errors printed between a file's markers fail it.
+function ConvertFrom-ValidateLog([string]$LogFile) {
+    $cases = @(); $current = $null; $buffer = @(); $outside = @()
+    foreach ($raw in Get-Content -LiteralPath $LogFile) {
+        $line = $raw -replace "`e\[[0-9;]*m", ''
+        if ($line -match '^@@validate begin (?<path>.+)$') {
+            $current = $Matches.path; $buffer = @()
+        } elseif ($line -match '^@@validate end (?<path>\S+) (?<status>.+)$') {
+            $problems = @(Select-GodotErrors $buffer)
+            if ($Matches.status -ne 'ok') { $problems = @($Matches.status) + $problems }
+            $cases += @{ Name = $Matches.path; Failure = ($problems -join "`n") }
+            $current = $null
+        } elseif ($current) {
+            $buffer += $line
+        } else {
+            $outside += $line
+        }
+    }
+    # Errors before the first file (autoloads, project settings) belong to the project as a whole.
+    $startup = @(Select-GodotErrors $outside)
+    if ($startup.Count -gt 0) { $cases += @{ Name = 'project startup'; Failure = ($startup -join "`n") } }
+    return $cases
 }
 
 function Invoke-TestRunner {
@@ -106,12 +131,22 @@ function Invoke-TestRunner {
             $code = Invoke-Logged $godot $gutArgs (Join-Path $ResultsDir 'gut.log')
             Stop-LogGroup
         }
+        'validate' {
+            $log = Join-Path $ResultsDir 'validate.log'
+            $tool = (Join-Path $PSScriptRoot '../tools/validate.gd' | Resolve-Path).Path -replace '\\', '/'
+            Start-LogGroup 'Validate scripts, scenes and resources'
+            $code = Invoke-Logged $godot @('--headless', '--path', $project, '-s', $tool) $log
+            Stop-LogGroup
+            $cases = @(ConvertFrom-ValidateLog $log)
+            if ($code -ne 0) { $cases += @{ Name = 'validate'; Failure = "Godot exited with $code" } }
+            Write-JUnitCases (Join-Path $ResultsDir 'validate.junit.xml') 'validate' $cases
+        }
         'smoke' {
             $log = Join-Path $ResultsDir 'smoke.log'
             Start-LogGroup "Smoke run ($Frames frames)"
             $code = Invoke-Logged $godot @('--headless', '--path', $project, '--quit-after', "$Frames") $log
             Stop-LogGroup
-            $errors = Get-GodotLogErrors $log
+            $errors = @(Get-GodotLogErrors $log)
             $message = if ($code -ne 0) { "Godot exited with $code" }
                 elseif ($errors.Count -gt 0) { $errors -join "`n" }
                 else { "Main scene ran $Frames frames without errors" }

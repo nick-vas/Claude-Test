@@ -1,12 +1,13 @@
 # Reusable Godot 4 pipeline that packs the PowerShell test suite (ci/godot/godot-ci.ps1) for a Linux
-# runner: one test job (build once, run every detected test framework), then optional exports, one job
-# per preset. The same script runs locally on Windows. Works with no inputs at all:
+# runner: one test job (build once, run every detected test framework), then optional exports (one job per
+# preset) and an optional GitHub Release. The same script runs locally on Windows. Works with no inputs:
 #
 #   jobs:
 #     godot:
 #       uses: nick-vas/Godot_TestSuite/.github/workflows/godot.yml@main
 #
-# See README.md for usage scenarios.
+# Permissions come from the calling job: contents: read is enough to test; add pull-requests: write for
+# the summary comment on pull requests, and contents: write for releases. See README.md.
 name: Godot
 
 on:
@@ -21,7 +22,7 @@ on:
         type: string
         default: ""
       runners:
-        description: "Comma list of dotnet, gdunit4, godottest, gut, smoke; none to only build (default - detected)"
+        description: "Comma list of validate, dotnet, gdunit4, godottest, gut, smoke; none to only build (default - detected)"
         type: string
         default: ""
       filter:
@@ -32,10 +33,26 @@ on:
         description: Collect coverage and add it to the job summary
         type: boolean
         default: false
+      min-coverage:
+        description: Fail when line coverage is below this percentage (0 = off; turns coverage on)
+        type: number
+        default: 0
+      pr-comment:
+        description: On pull requests, post one comment with the results (needs pull-requests - write)
+        type: boolean
+        default: true
       exports:
         description: 'Presets to export after tests pass: "all", a comma list of preset names, or empty for none'
         type: string
         default: ""
+      run-exports:
+        description: Launch each exported build on a runner of its own OS (Windows builds on windows-latest) and fail on errors
+        type: boolean
+        default: false
+      release:
+        description: Zip the exports and publish a GitHub Release when the run is for a tag (dry run otherwise; needs contents - write)
+        type: boolean
+        default: false
       runs-on:
         description: Runner label. Linux is cheapest; windows-latest also works
         type: string
@@ -57,15 +74,14 @@ on:
         description: JSON array of the presets that were exported
         value: ${{ jobs.test.outputs.presets }}
 
-permissions:
-  contents: read
-
 jobs:
   test:
     name: Test
     runs-on: ${{ inputs.runs-on }}
     outputs:
+      name: ${{ steps.godot.outputs.name }}
       presets: ${{ steps.exports.outputs.presets }}
+      targets: ${{ steps.exports.outputs.targets }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -81,7 +97,8 @@ jobs:
           path: .godot-pipelines
 
       # Keep Godot from importing the pipeline repository's example projects.
-      - run: touch .godot-pipelines/.gdignore
+      - run: New-Item -Force .godot-pipelines/.gdignore | Out-Null
+        shell: pwsh
 
       - id: godot
         uses: ./.godot-pipelines/.github/actions/godot
@@ -92,15 +109,34 @@ jobs:
           runners: ${{ inputs.runners }}
           filter: ${{ inputs.filter }}
           coverage: ${{ inputs.coverage }}
+          min-coverage: ${{ inputs.min-coverage }}
           retention-days: ${{ inputs.retention-days }}
+
+      - name: Comment on the pull request
+        if: always() && inputs.pr-comment && github.event_name == 'pull_request' && steps.godot.outputs.name != ''
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RESULTS: ${{ steps.godot.outputs.results }}
+          NAME: ${{ steps.godot.outputs.name }}
+          ARTIFACT: ${{ steps.godot.outputs.results-artifact }}
+          PR: ${{ github.event.pull_request.number }}
+          OUTCOME: ${{ steps.godot.outcome }}
+        run: |
+          ./.godot-pipelines/ci/godot/tools/Publish-PrComment.ps1 -ResultsDir "$env:RESULTS" -Name $env:NAME `
+            -ArtifactName $env:ARTIFACT -PullRequest $env:PR -Outcome $env:OUTCOME
 
       - id: exports
         shell: pwsh
         env:
           WANTED: ${{ inputs.exports }}
           DETECTED: ${{ steps.godot.outputs.presets }}
+          PLATFORMS: ${{ steps.godot.outputs.preset-platforms }}
+          RUN_EXPORTS: ${{ inputs.run-exports }}
+          DEFAULT_RUNNER: ${{ inputs.runs-on }}
         run: |
           $detected = @(if ($env:DETECTED) { $env:DETECTED | ConvertFrom-Json })
+          $platforms = if ($env:PLATFORMS) { $env:PLATFORMS | ConvertFrom-Json -AsHashtable } else { @{} }
           $wanted = $env:WANTED.Trim()
           $presets = @(
             if ($wanted -eq 'all') { $detected }
@@ -108,17 +144,27 @@ jobs:
           )
           $missing = @($presets | Where-Object { $_ -notin $detected })
           if ($missing) { Write-Host "::error::Unknown export presets $($missing -join ', '); the project has $($detected -join ', ')"; exit 1 }
+          # To launch a build, export it on a runner of its own OS; otherwise use the default runner.
+          $targets = @($presets | ForEach-Object {
+            $os = $env:DEFAULT_RUNNER
+            if ($env:RUN_EXPORTS -eq 'true') {
+              if ($platforms[$_] -eq 'Windows Desktop') { $os = 'windows-latest' }
+              elseif ($platforms[$_] -match '^Linux') { $os = 'ubuntu-latest' }
+            }
+            @{ preset = $_; os = $os }
+          })
           "presets=$(ConvertTo-Json -Compress -InputObject $presets)" >> $env:GITHUB_OUTPUT
+          "targets=$(ConvertTo-Json -Compress -InputObject $targets)" >> $env:GITHUB_OUTPUT
 
   export:
-    name: Export (${{ matrix.preset }})
+    name: Export (${{ matrix.target.preset }})
     needs: test
-    if: needs.test.outputs.presets != '[]'
-    runs-on: ${{ inputs.runs-on }}
+    if: needs.test.outputs.targets != '[]'
+    runs-on: ${{ matrix.target.os }}
     strategy:
       fail-fast: false
       matrix:
-        preset: ${{ fromJSON(needs.test.outputs.presets) }}
+        target: ${{ fromJSON(needs.test.outputs.targets) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -131,7 +177,8 @@ jobs:
           ref: ${{ job.workflow_sha || 'main' }}
           path: .godot-pipelines
 
-      - run: touch .godot-pipelines/.gdignore
+      - run: New-Item -Force .godot-pipelines/.gdignore | Out-Null
+        shell: pwsh
 
       - uses: ./.godot-pipelines/.github/actions/godot
         with:
@@ -139,5 +186,31 @@ jobs:
           project: ${{ inputs.project }}
           godot-version: ${{ inputs.godot-version }}
           runners: none
-          preset: ${{ matrix.preset }}
+          preset: ${{ matrix.target.preset }}
+          run-exports: ${{ inputs.run-exports }}
           retention-days: ${{ inputs.retention-days }}
+
+  release:
+    name: Release
+    needs: [test, export]
+    if: inputs.release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository || 'nick-vas/Godot_TestSuite' }}
+          ref: ${{ job.workflow_sha || 'main' }}
+          path: .godot-pipelines
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ needs.test.outputs.name }}-*
+          path: dist
+
+      - shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NAME: ${{ needs.test.outputs.name }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: ./.godot-pipelines/ci/godot/tools/Publish-Release.ps1 -Dist dist -Name $env:NAME -Tag "$env:TAG"

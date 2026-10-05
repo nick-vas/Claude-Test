@@ -64,6 +64,31 @@ function Get-ExportPresets([string]$ProjectDir) {
     return @(Get-Content -LiteralPath $file | Where-Object { $_ -match '^name="(.*)"$' } | ForEach-Object { $Matches[1] })
 }
 
+# Platform and export_path of each preset, keyed by preset name.
+function Get-ExportPresetDetails([string]$ProjectDir) {
+    $file = Join-Path $ProjectDir 'export_presets.cfg'
+    $details = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $file)) { return $details }
+    $current = $null
+    foreach ($line in Get-Content -LiteralPath $file) {
+        if ($line -match '^\[preset\.\d+\]$') { $current = [ordered]@{ Name = ''; Platform = ''; ExportPath = '' } }
+        elseif ($line -match '^\[') { $current = $null }
+        elseif ($current -and $line -match '^(?<key>name|platform|export_path)="(?<value>.*)"$') {
+            switch ($Matches.key) {
+                'name' { $current.Name = $Matches.value; $details[$Matches.value] = $current }
+                'platform' { $current.Platform = $Matches.value }
+                'export_path' { $current.ExportPath = $Matches.value }
+            }
+        }
+    }
+    return $details
+}
+
+# Whether this machine can launch a build for the given export platform.
+function Test-CanRunPlatform([string]$Platform) {
+    return ($IsWindows -and $Platform -eq 'Windows Desktop') -or ($IsLinux -and $Platform -match '^Linux')
+}
+
 function Get-ProjectInfo {
     param([string]$Project, [string]$Solution, [string]$GodotVersion, [string[]]$Runners)
 
@@ -78,6 +103,8 @@ function Get-ProjectInfo {
 
     $selected = @($Runners | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     if ($selected.Count -eq 0) {
+        # Every project gets the load check; it needs no tests.
+        $selected += 'validate'
         # dotnet test on the solution covers xUnit/NUnit/MSTest and gdUnit4Net suites alike.
         if ($sln) {
             $csprojs = @(Find-ProjectFiles -Root (Split-Path $sln) -Filter '*.csproj')
@@ -90,7 +117,7 @@ function Get-ProjectInfo {
     } elseif ($selected -contains 'none') {
         $selected = @()
     }
-    $valid = 'dotnet', 'gdunit4', 'godottest', 'gut', 'smoke'
+    $valid = 'validate', 'dotnet', 'gdunit4', 'godottest', 'gut', 'smoke'
     $unknown = @($selected | Where-Object { $_ -notin $valid })
     if ($unknown) { Stop-GodotCi "Unknown runner(s) $($unknown -join ', '); use $($valid -join ', ')" }
 
@@ -101,8 +128,9 @@ function Get-ProjectInfo {
         Name           = ConvertTo-SafeName $name
         Solution       = $sln
         GodotVersion   = $version
-        Runners        = $selected
+        # @(...): PowerShell unrolls one-item and empty arrays returned from functions.
+        Runners        = @($selected)
         GoDotTestScene = Find-GoDotTestScene $projectDir
-        Presets        = Get-ExportPresets $projectDir
+        Presets        = @(Get-ExportPresets $projectDir)
     }
 }
